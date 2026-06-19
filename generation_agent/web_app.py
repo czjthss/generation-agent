@@ -1,0 +1,456 @@
+from __future__ import annotations
+
+import argparse
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+import os
+from pathlib import Path
+import subprocess
+import sys
+from threading import Lock
+from typing import Any
+from uuid import uuid4
+
+from flask import Flask, abort, jsonify, render_template, request, send_file
+import pandas as pd
+
+from .agent import GenerationAgent
+from .compact_storage import preview_points, write_series_arrow
+from .dataset_generator import DatasetGenerator
+from .planner import DEFAULT_LLM_MODEL
+from .reference_profiler import profile_reference_arrow_or_raise
+from .semantic_types import AnomalyOverrides
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "web_outputs"
+MAX_SERIES_COUNT = 10_000
+MAX_LENGTH = 1_000_000
+AVAILABLE_CHAT_MODELS = [
+    "gpt-5.5",
+    "openai/gpt-5.5",
+    "openai/gpt-5.4-pro",
+    "openai/gpt-5.4",
+    "openai/gpt-5.4-mini",
+    "openai/gpt-5.2",
+    "openai/gpt-5.1",
+    "openai/gpt-5",
+    "openai/gpt-5-mini",
+    "openai/gpt-4.1",
+    "openai/gpt-4.1-mini",
+    "openai/gpt-4o",
+    "openai/gpt-4o-mini",
+    "google/gemini-3.1-pro-preview",
+    "google/gemini-3-flash-preview",
+    "google/gemini-2.5-pro",
+    "google/gemini-2.5-flash",
+    "google/gemini-2.5-flash-lite",
+    "deepseek/deepseek-v4-pro",
+    "deepseek/deepseek-v4-flash",
+    "deepseek/deepseek-v3.2",
+    "anthropic/claude-opus-4.5",
+    "anthropic/claude-sonnet-4.5",
+    "anthropic/claude-haiku-4.5",
+    "moonshotai/kimi-k2.6",
+    "moonshotai/kimi-k2.5",
+    "bailian/qwen3.7-max",
+    "bailian/qwen3.7-plus",
+    "bailian/qwen3.6-max-preview",
+    "bailian/qwen3.6-plus",
+    "bailian/qwen3.5-plus",
+    "bailian/qwen-plus",
+    "bailian/qwen-turbo",
+    "volcengine/doubao-seed-2.0-pro",
+    "volcengine/doubao-seed-2.0-mini",
+    "x-ai/grok-4.1-fast",
+    "z-ai/glm-5.2",
+    "z-ai/glm-5.1",
+    "z-ai/glm-4.7-flash:free",
+]
+
+
+@dataclass
+class GenerationJob:
+    id: str
+    status: str = "queued"
+    progress: int = 0
+    message: str = "任务已进入队列"
+    files: list[Path] = field(default_factory=list)
+    result: dict[str, Any] = field(default_factory=dict)
+    error: str | None = None
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+    def public_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "status": self.status,
+            "progress": self.progress,
+            "message": self.message,
+            "error": self.error,
+            "created_at": self.created_at,
+            "result": self.result,
+            "files": [
+                {
+                    "name": path.name,
+                    "path": str(path),
+                    "download_url": f"/api/jobs/{self.id}/files/{index}",
+                }
+                for index, path in enumerate(self.files)
+            ],
+        }
+
+
+class JobStore:
+    def __init__(self) -> None:
+        self._jobs: dict[str, GenerationJob] = {}
+        self._lock = Lock()
+
+    def create(self) -> GenerationJob:
+        job = GenerationJob(id=uuid4().hex)
+        with self._lock:
+            self._jobs[job.id] = job
+        return job
+
+    def get(self, job_id: str) -> GenerationJob | None:
+        with self._lock:
+            return self._jobs.get(job_id)
+
+    def update(self, job_id: str, **changes: Any) -> None:
+        with self._lock:
+            job = self._jobs[job_id]
+            for key, value in changes.items():
+                setattr(job, key, value)
+
+
+def _as_int(payload: dict[str, Any], name: str, default: int) -> int:
+    try:
+        return int(payload.get(name, default))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} 必须是整数") from exc
+
+
+COMMON_FREQUENCIES = {"15min", "30min", "h", "D", "W", "MS", "ME"}
+
+
+def _normalize_frequency(payload: dict[str, Any]) -> str:
+    selected = str(payload.get("freq", "h")).strip() or "h"
+    if selected == "custom":
+        selected = str(payload.get("custom_freq", "")).strip()
+        if not selected:
+            raise ValueError("请输入自定义采样频率")
+    elif selected not in COMMON_FREQUENCIES:
+        raise ValueError("采样频率参数无效")
+
+    try:
+        pd.date_range(start="2026-01-01", periods=2, freq=selected)
+    except Exception as exc:
+        raise ValueError(f"采样频率不是有效的 Pandas freq: {selected}") from exc
+    return selected
+
+
+def _normalize_start(payload: dict[str, Any]) -> str:
+    start = str(payload.get("start", "2026-07-01T00:00")).strip()
+    if not start:
+        raise ValueError("请选择起始时间")
+    try:
+        parsed = pd.Timestamp(start)
+    except Exception as exc:
+        raise ValueError(f"起始时间格式无效: {start}") from exc
+    if pd.isna(parsed):
+        raise ValueError(f"起始时间格式无效: {start}")
+    return parsed.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _available_models(default_model: str | None = None) -> list[str]:
+    models = list(AVAILABLE_CHAT_MODELS)
+    if default_model and default_model not in models:
+        models.insert(0, default_model)
+    return models
+
+
+def _normalize_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    description = str(payload.get("description", "")).strip()
+    if not description:
+        raise ValueError("请输入需要生成的数据描述或领域")
+    mode = str(payload.get("generation_mode", "sequence"))
+    if mode not in {"sequence", "dataset"}:
+        raise ValueError("generation_mode 只能是 sequence 或 dataset")
+
+    length = _as_int(payload, "length", 168)
+    series_count = _as_int(payload, "series_count", 10)
+    seed = _as_int(payload, "seed", 42)
+    if not 1 <= length <= MAX_LENGTH:
+        raise ValueError(f"length 必须在 1 到 {MAX_LENGTH} 之间")
+    if not 1 <= series_count <= MAX_SERIES_COUNT:
+        raise ValueError(f"series_count 必须在 1 到 {MAX_SERIES_COUNT} 之间")
+
+    output_dir = Path(str(payload.get("output_dir", DEFAULT_OUTPUT_DIR)).strip()).expanduser().resolve()
+    filename = Path(str(payload.get("filename", "generated_timeseries.arrow")).strip()).name
+    if mode == "sequence" and not filename.lower().endswith(".arrow"):
+        filename += ".arrow"
+
+    anomalies = str(payload.get("anomalies", "auto"))
+    severity = payload.get("anomaly_severity") or None
+    if anomalies not in {"auto", "on", "off"}:
+        raise ValueError("异常控制参数无效")
+    if severity not in {None, "low", "medium", "high"}:
+        raise ValueError("异常强度参数无效")
+
+    reference = str(payload.get("reference", "")).strip()
+    reference_path = Path(reference).expanduser().resolve() if reference else None
+    if reference_path and not reference_path.is_file():
+        raise ValueError(f"参考序列不存在: {reference_path}")
+    if reference_path and reference_path.suffix.lower() != ".arrow":
+        raise ValueError("参考时间序列必须是 Arrow 文件（.arrow）")
+    diversity_strength = str(payload.get("diversity_strength", "medium")).strip()
+    if diversity_strength not in {"off", "low", "medium", "high"}:
+        raise ValueError("多样性强度参数无效")
+    default_model = os.getenv("GENERATION_AGENT_MODEL", DEFAULT_LLM_MODEL)
+    model = str(payload.get("model", default_model)).strip() or default_model
+    if model not in _available_models(default_model):
+        raise ValueError("模型参数无效")
+
+    return {
+        "description": description,
+        "generation_mode": mode,
+        "series_count": series_count,
+        "output_dir": output_dir,
+        "filename": filename,
+        "length": length,
+        "freq": _normalize_frequency(payload),
+        "start": _normalize_start(payload),
+        "seed": seed,
+        "model": model,
+        "reference_path": reference_path,
+        "anomalies": anomalies,
+        "anomaly_severity": severity,
+        "diversity_strength": diversity_strength,
+    }
+
+
+def _run_generation(job_id: str, options: dict[str, Any], store: JobStore) -> None:
+    try:
+        store.update(job_id, status="running", progress=8, message="正在准备生成参数")
+        reference_profile = None
+        if options["reference_path"]:
+            store.update(job_id, progress=16, message="正在分析参考时间序列")
+            reference_profile = profile_reference_arrow_or_raise(options["reference_path"])
+
+        enabled = None if options["anomalies"] == "auto" else options["anomalies"] == "on"
+        overrides = AnomalyOverrides(enabled=enabled, severity=options["anomaly_severity"])
+        agent = GenerationAgent(model=options["model"])
+        output_dir: Path = options["output_dir"]
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        if options["generation_mode"] == "dataset":
+            store.update(job_id, progress=24, message="多 Agent 正在设计数据集场景并生成序列")
+            manifest = DatasetGenerator(agent).generate_to_directory(
+                domain=options["description"], output_dir=output_dir,
+                series_count=options["series_count"], length=options["length"],
+                freq=options["freq"], start=options["start"], seed=options["seed"],
+                anomaly_overrides=overrides, reference_profile=reference_profile,
+                diversity_strength=options["diversity_strength"],
+            )
+            files = sorted(output_dir.glob("*.arrow")) + [
+                path for path in (output_dir / "manifest.json", output_dir / "scenarios.json") if path.exists()
+            ]
+            store.update(
+                job_id, status="completed", progress=100,
+                message=f"已生成 {manifest['series_count']} 条序列", files=files,
+                result={"mode": "dataset", "output_dir": str(output_dir),
+                        "storage_format": manifest["storage_format"],
+                        "series_count": manifest["series_count"],
+                        "scenario_count": manifest["scenario_count"],
+                        "length_per_series": manifest["length_per_series"],
+                        "diversity": manifest.get("diversity", {}),
+                        "dataset_file": "not written; see per-series Arrow files",
+                        "preview": manifest.get("preview", {})},
+            )
+            return
+
+        output_path = output_dir / options["filename"]
+        store.update(job_id, progress=25, message="多 Agent 正在规划并生成单条序列")
+        plan = agent.plan(
+            options["description"],
+            reference_profile=reference_profile.to_dict() if reference_profile else None,
+        )
+        frame = agent.generate_from_plan(
+            plan, length=options["length"], freq=options["freq"], start=options["start"],
+            seed=options["seed"], anomaly_overrides=overrides,
+        )
+        from .planner import SeriesPlan
+
+        final_plan_payload = frame.attrs.get("final_plan")
+        if isinstance(final_plan_payload, dict):
+            plan = SeriesPlan.from_dict(final_plan_payload)
+        storage = write_series_arrow(
+            frame,
+            output_path,
+            metadata={
+                "series_id": "sequence_0001",
+                "description": options["description"],
+                "start": options["start"],
+                "frequency": options["freq"],
+                "length": options["length"],
+                "unit": plan.unit,
+                "domain": plan.domain,
+                "generator_type": plan.generator_type,
+                "semantic_type": plan.semantic_type,
+                "plan": plan.to_dict(),
+            },
+        )
+        store.update(
+            job_id, status="completed", progress=100, message=f"已生成 {len(frame)} 个数据点",
+            files=[output_path],
+            result={"mode": "sequence", "output_dir": str(output_dir), "rows": len(frame),
+                    "storage_format": "arrow_ipc", "stored_bytes": storage["bytes"],
+                    "domain": plan.domain, "unit": plan.unit,
+                    "semantic_type": plan.semantic_type, "output_file": str(output_path),
+                    "preview": preview_points(frame)},
+        )
+    except Exception as exc:
+        store.update(job_id, status="failed", progress=100, message="生成失败",
+                     error=f"{exc.__class__.__name__}: {exc}")
+
+
+def _open_macos_dialog(kind: str) -> str:
+    if kind == "directory":
+        script = 'POSIX path of (choose folder with prompt "选择输出文件夹")'
+    elif kind == "arrow":
+        script = 'POSIX path of (choose file with prompt "选择参考 Arrow 时间序列")'
+    else:
+        raise ValueError("unknown dialog kind")
+
+    result = subprocess.run(
+        ["osascript", "-e", script],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    if result.returncode == 0:
+        return str(Path(result.stdout.strip()).expanduser().resolve()) if result.stdout.strip() else ""
+    if "-128" in result.stderr or "User canceled" in result.stderr:
+        return ""
+    raise RuntimeError(result.stderr.strip() or "macOS 文件选择器打开失败")
+
+
+def _open_native_dialog(kind: str) -> str:
+    if sys.platform == "darwin":
+        try:
+            return _open_macos_dialog(kind)
+        except FileNotFoundError:
+            pass
+
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except Exception as exc:
+        raise RuntimeError(f"本机文件选择器不可用: {exc}") from exc
+
+    root = tk.Tk()
+    root.withdraw()
+    root.update()
+    try:
+        if kind == "directory":
+            path = filedialog.askdirectory(title="选择输出文件夹")
+        elif kind == "arrow":
+            path = filedialog.askopenfilename(
+                title="选择参考 Arrow 时间序列",
+                filetypes=[("Arrow IPC", "*.arrow"), ("All files", "*.*")],
+            )
+        else:
+            raise ValueError("unknown dialog kind")
+    finally:
+        root.destroy()
+    return str(Path(path).expanduser().resolve()) if path else ""
+
+
+def create_app() -> Flask:
+    app = Flask(__name__, template_folder="templates")
+    store = JobStore()
+    executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="generation-web")
+    app.extensions["generation_job_store"] = store
+    app.extensions["generation_executor"] = executor
+
+    @app.get("/")
+    def index() -> str:
+        default_model = os.getenv("GENERATION_AGENT_MODEL", DEFAULT_LLM_MODEL)
+        return render_template("index.html", default_output_dir=str(DEFAULT_OUTPUT_DIR),
+                               default_model=default_model,
+                               available_models=_available_models(default_model))
+
+    @app.post("/api/generate")
+    def generate() -> Any:
+        try:
+            options = _normalize_payload(request.get_json(silent=True) or {})
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        job = store.create()
+        executor.submit(_run_generation, job.id, options, store)
+        return jsonify(job.public_dict()), 202
+
+    @app.post("/api/select-output-dir")
+    def select_output_dir() -> Any:
+        try:
+            path = _open_native_dialog(kind="directory")
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        return jsonify({"path": path})
+
+    @app.post("/api/select-reference-arrow")
+    def select_reference_arrow() -> Any:
+        try:
+            path = _open_native_dialog(kind="arrow")
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        if path and Path(path).suffix.lower() != ".arrow":
+            return jsonify({"error": "请选择 .arrow 文件"}), 400
+        return jsonify({"path": path})
+
+    @app.post("/api/upload-reference-arrow")
+    def upload_reference_arrow() -> Any:
+        upload = request.files.get("file")
+        if upload is None or not upload.filename:
+            return jsonify({"error": "请选择 Arrow 文件"}), 400
+        filename = Path(upload.filename).name
+        if Path(filename).suffix.lower() != ".arrow":
+            return jsonify({"error": "参考时间序列必须是 Arrow 文件（.arrow）"}), 400
+        upload_dir = DEFAULT_OUTPUT_DIR / "_uploads"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        target = upload_dir / f"{uuid4().hex}_{filename}"
+        upload.save(target)
+        return jsonify({"path": str(target.resolve())})
+
+    @app.get("/api/jobs/<job_id>")
+    def job_status(job_id: str) -> Any:
+        job = store.get(job_id)
+        if job is None:
+            abort(404)
+        return jsonify(job.public_dict())
+
+    @app.get("/api/jobs/<job_id>/files/<int:file_index>")
+    def download(job_id: str, file_index: int) -> Any:
+        job = store.get(job_id)
+        if job is None or file_index < 0 or file_index >= len(job.files):
+            abort(404)
+        path = job.files[file_index]
+        if not path.is_file():
+            abort(404)
+        return send_file(path, as_attachment=True, download_name=path.name)
+
+    return app
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run the time-series generation web UI.")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=7860)
+    parser.add_argument("--debug", action="store_true")
+    args = parser.parse_args()
+    create_app().run(host=args.host, port=args.port, debug=args.debug, threaded=True)
+
+
+if __name__ == "__main__":
+    main()

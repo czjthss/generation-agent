@@ -1,0 +1,27 @@
+# Secrets and local config
+.env
+.env.*
+!.env.example
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE and OS files
+.DS_Store
+.idea/
+.vscode/
+
+# Generated data and runtime outputs
+outputs/
+web_outputs/
+generated_timeseries.csv
+*.arrow
+*.csv
+*.png
+*.pdf
+
+# Keep source docs and examples tracked explicitly.

@@ -1,0 +1,28 @@
+[
+  {
+    "domain": "tidal_water_level",
+    "generator_type": "cyclic_signal",
+    "unit": "m",
+    "baseline": 2.4,
+    "trend_slope": 0.0,
+    "daily_amplitude": 0.9,
+    "weekly_enabled": false,
+    "weekly_amplitude": 3.0,
+    "seasonal_amplitude": 0.0,
+    "heat_effect": 0.0,
+    "noise_sigma": 0.05,
+    "anomaly_count": 0,
+    "anomaly_magnitude": 3.0,
+    "anomaly_width": 1,
+    "anomaly_kind": "spike",
+    "lower_bound": 0.0,
+    "domain_params": {},
+    "keywords": [
+      "潮汐",
+      "水位",
+      "海洋潮汐",
+      "tidal"
+    ],
+    "rationale": "Tidal water level has strong periodic oscillation around a mean sea level."
+  }
+]
