@@ -22,7 +22,7 @@ class FakeLLM:
 def test_specialists_build_and_challenge_a_process_design():
     llm = FakeLLM()
     evidence = GenerationSpecialistWorkflow(llm).analyze(
-        "生成园区负载",
+        "generate park load",
         reference_context={"reference_strength": "scale", "reference_profile": {}},
     )
     assert evidence.specification["observable"] == "load"

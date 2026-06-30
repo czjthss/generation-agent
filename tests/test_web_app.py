@@ -8,7 +8,7 @@ from generation_agent.web_app import _available_models, _normalize_payload, crea
 
 
 def test_normalize_sequence_payload(tmp_path: Path) -> None:
-    payload = _normalize_payload({"description": "生成夏季降水量", "output_dir": str(tmp_path),
+    payload = _normalize_payload({"description": "generate summer rainfall", "output_dir": str(tmp_path),
                                   "filename": "rain", "length": "48", "seed": "7"})
     assert payload["generation_mode"] == "sequence"
     assert payload["filename"] == "rain.arrow"
@@ -20,7 +20,7 @@ def test_normalize_sequence_payload(tmp_path: Path) -> None:
 
 def test_normalize_accepts_custom_frequency(tmp_path: Path) -> None:
     payload = _normalize_payload({
-        "description": "生成电力负载",
+        "description": "generate electric load",
         "output_dir": str(tmp_path),
         "freq": "custom",
         "custom_freq": "2h",
@@ -30,12 +30,22 @@ def test_normalize_accepts_custom_frequency(tmp_path: Path) -> None:
     assert payload["start"] == "2026-01-01 03:30:00"
 
 
+def test_normalize_accepts_dataset_scenario_frequency_toggle(tmp_path: Path) -> None:
+    payload = _normalize_payload({
+        "generation_mode": "dataset",
+        "description": "generate weather dataset",
+        "output_dir": str(tmp_path),
+        "respect_scenario_frequency": True,
+    })
+    assert payload["respect_scenario_frequency"] is True
+
+
 def test_normalize_rejects_invalid_frequency_and_start(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="采样频率"):
-        _normalize_payload({"description": "生成电力负载", "output_dir": str(tmp_path), "freq": "abc"})
-    with pytest.raises(ValueError, match="起始时间格式无效"):
+    with pytest.raises(ValueError, match="Invalid frequency"):
+        _normalize_payload({"description": "generate electric load", "output_dir": str(tmp_path), "freq": "abc"})
+    with pytest.raises(ValueError, match="Invalid start time format"):
         _normalize_payload({
-            "description": "生成电力负载",
+            "description": "generate electric load",
             "output_dir": str(tmp_path),
             "start": "not-a-time",
         })
@@ -43,14 +53,14 @@ def test_normalize_rejects_invalid_frequency_and_start(tmp_path: Path) -> None:
 
 def test_normalize_rejects_unknown_model(tmp_path: Path) -> None:
     payload = _normalize_payload({
-        "description": "生成电力负载",
+        "description": "generate electric load",
         "output_dir": str(tmp_path),
         "model": _available_models()[0],
     })
     assert payload["model"] == _available_models()[0]
-    with pytest.raises(ValueError, match="模型参数无效"):
+    with pytest.raises(ValueError, match="Invalid model parameter"):
         _normalize_payload({
-            "description": "生成电力负载",
+            "description": "generate electric load",
             "output_dir": str(tmp_path),
             "model": "unknown/model",
         })
@@ -60,7 +70,7 @@ def test_normalize_accepts_only_arrow_reference(tmp_path: Path) -> None:
     arrow = tmp_path / "reference.arrow"
     arrow.write_bytes(b"placeholder")
     payload = _normalize_payload({
-        "description": "生成电力负载",
+        "description": "generate electric load",
         "output_dir": str(tmp_path),
         "reference": str(arrow),
     })
@@ -70,14 +80,14 @@ def test_normalize_accepts_only_arrow_reference(tmp_path: Path) -> None:
     csv.write_text("value\n1\n2\n", encoding="utf-8")
     with pytest.raises(ValueError, match="Arrow"):
         _normalize_payload({
-            "description": "生成电力负载",
+            "description": "generate electric load",
             "output_dir": str(tmp_path),
             "reference": str(csv),
         })
 
 
 def test_normalize_rejects_empty_description() -> None:
-    with pytest.raises(ValueError, match="请输入"):
+    with pytest.raises(ValueError, match="required"):
         _normalize_payload({"description": "  "})
 
 

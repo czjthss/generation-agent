@@ -112,10 +112,17 @@ def _message_text(message: Any) -> str:
 
 
 class JsonSpecialist:
-    def __init__(self, llm: Any, system_prompt: str, contract: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        llm: Any,
+        system_prompt: str,
+        contract: dict[str, Any],
+        attempts: int = 1,
+    ) -> None:
         self.llm = llm
         self.system_prompt = system_prompt
         self.contract = contract
+        self.attempts = max(1, int(attempts))
 
     def _validate(self, payload: dict[str, Any]) -> list[str]:
         errors: list[str] = []
@@ -142,7 +149,7 @@ class JsonSpecialist:
             HumanMessage(content=json.dumps(payload, ensure_ascii=False, indent=2)),
         ]
         errors: list[str] = []
-        for attempt in range(2):
+        for attempt in range(self.attempts):
             response = self.llm.invoke(messages)
             try:
                 result = _extract_json(_message_text(response))
@@ -152,7 +159,7 @@ class JsonSpecialist:
                 errors = [f"invalid JSON object: {exc}"]
             if not errors:
                 return result
-            if attempt == 0:
+            if attempt < self.attempts - 1:
                 messages.extend(
                     [
                         response,
@@ -169,23 +176,23 @@ class JsonSpecialist:
 
 
 class SpecificationAgent(JsonSpecialist):
-    def __init__(self, llm: Any) -> None:
-        super().__init__(llm, SPECIFICATION_AGENT_PROMPT, SPECIFICATION_CONTRACT)
+    def __init__(self, llm: Any, attempts: int = 1) -> None:
+        super().__init__(llm, SPECIFICATION_AGENT_PROMPT, SPECIFICATION_CONTRACT, attempts=attempts)
 
 
 class ProcessArchitectAgent(JsonSpecialist):
-    def __init__(self, llm: Any) -> None:
-        super().__init__(llm, PROCESS_ARCHITECT_PROMPT, PROCESS_CONTRACT)
+    def __init__(self, llm: Any, attempts: int = 1) -> None:
+        super().__init__(llm, PROCESS_ARCHITECT_PROMPT, PROCESS_CONTRACT, attempts=attempts)
 
 
 class DomainChallengerAgent(JsonSpecialist):
-    def __init__(self, llm: Any) -> None:
-        super().__init__(llm, DOMAIN_CHALLENGER_PROMPT, CHALLENGE_CONTRACT)
+    def __init__(self, llm: Any, attempts: int = 1) -> None:
+        super().__init__(llm, DOMAIN_CHALLENGER_PROMPT, CHALLENGE_CONTRACT, attempts=attempts)
 
 
 class ReferenceInterpreterAgent(JsonSpecialist):
-    def __init__(self, llm: Any) -> None:
-        super().__init__(llm, REFERENCE_INTERPRETER_PROMPT, REFERENCE_CONTRACT)
+    def __init__(self, llm: Any, attempts: int = 1) -> None:
+        super().__init__(llm, REFERENCE_INTERPRETER_PROMPT, REFERENCE_CONTRACT, attempts=attempts)
 
 
 @dataclass
@@ -203,11 +210,11 @@ class SpecialistEvidence:
 class GenerationSpecialistWorkflow:
     """Build a measurement contract, process design, and adversarial domain review."""
 
-    def __init__(self, llm: Any) -> None:
-        self.specification_agent = SpecificationAgent(llm)
-        self.process_architect = ProcessArchitectAgent(llm)
-        self.domain_challenger = DomainChallengerAgent(llm)
-        self.reference_interpreter = ReferenceInterpreterAgent(llm)
+    def __init__(self, llm: Any, attempts: int = 1) -> None:
+        self.specification_agent = SpecificationAgent(llm, attempts=attempts)
+        self.process_architect = ProcessArchitectAgent(llm, attempts=attempts)
+        self.domain_challenger = DomainChallengerAgent(llm, attempts=attempts)
+        self.reference_interpreter = ReferenceInterpreterAgent(llm, attempts=attempts)
 
     def analyze(
         self,

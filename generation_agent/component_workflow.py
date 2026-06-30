@@ -6,14 +6,20 @@ from typing import Any
 import numpy as np
 
 from .features import (
-    daily_load_cycle,
     gaussian_noise,
-    heat_index_effect,
     linear_trend,
-    sinusoidal_cycle,
-    working_day_gate,
 )
 from .planner import SeriesPlan
+from .time_features import (
+    TimeContext,
+    build_time_context,
+    daily_load_shape,
+    heat_index_effect_from_time,
+    hours_to_steps,
+    seasonal_cycle_from_time,
+    weekly_cycle_from_time,
+    working_day_gate_from_time,
+)
 
 
 @dataclass
@@ -154,6 +160,146 @@ def _component(
     )
 
 
+
+def _anomaly_component(plan: SeriesPlan) -> MechanismComponent | None:
+    if not (plan.anomaly_enabled or plan.anomaly_count > 0):
+        return None
+    return _component(
+        "anomaly_intervention",
+        "LLM-selected abnormal intervention applied by the local numerical kernel",
+        "sparse_operational_anomaly",
+        "bounded_additive_intervention",
+        "signed",
+        "short abnormal windows",
+        "sparse_spike_drop_or_shift",
+        "anomaly_strategy",
+        enabled=plan.anomaly_enabled,
+        count=plan.anomaly_count,
+        kind=plan.anomaly_kind,
+        width=plan.anomaly_width,
+        target=plan.anomaly_target,
+        severity=plan.anomaly_severity,
+    )
+
+
+def _append_common_components(components: list[MechanismComponent], plan: SeriesPlan) -> list[MechanismComponent]:
+    anomaly = _anomaly_component(plan)
+    if anomaly is not None and not any(component.name == anomaly.name for component in components):
+        components = [*components, anomaly]
+    return components
+
+
+def _feature_family_from_llm_component(component: dict[str, Any], plan: SeriesPlan) -> str:
+    explicit = str(component.get("feature_family", "")).strip()
+    if explicit:
+        return explicit
+    text = " ".join(
+        str(component.get(key, "")).lower()
+        for key in ("name", "role", "component_semantic", "time_scale_behavior", "statistical_shape")
+    )
+    if any(token in text for token in ("daylight", "solar", "pv", "irradiance", "sun")):
+        return "daylight_envelope"
+    if any(token in text for token in ("cloud", "attenuation", "shading", "遮挡", "云")):
+        return "cloud_drop"
+    if any(token in text for token in ("event", "arrival", "rain", "precip", "sparse", "storm")):
+        return "event_mask" if "intensity" not in text else "gamma_intensity"
+    if any(token in text for token in ("shift", "operating window", "workday", "calendar")):
+        return "working_day_shift"
+    if any(token in text for token in ("weekly", "weekend")):
+        return "weekly_gate"
+    if any(token in text for token in ("season", "annual")):
+        return "seasonal_cycle"
+    if any(token in text for token in ("heat", "temperature response", "cooling")):
+        return "heat_index_effect"
+    if any(token in text for token in ("peak", "rush")):
+        return "gaussian_peak"
+    if any(token in text for token in ("cycle", "periodic", "diurnal", "daily")):
+        return "cyclic_signal"
+    if any(token in text for token in ("trend", "drift")):
+        return "linear_trend"
+    if any(token in text for token in ("noise", "residual", "jitter")):
+        return "noise"
+    if any(token in text for token in ("baseline", "level", "base")):
+        return "baseline"
+    return "unknown_component"
+
+
+def _component_value_role(component: dict[str, Any]) -> str:
+    explicit = str(component.get("value_role", "")).strip()
+    if explicit:
+        return explicit
+    text = f"{component.get('role', '')} {component.get('component_semantic', '')}".lower()
+    if any(token in text for token in ("cloud", "attenuation", "shading")):
+        return "multiplicative_attenuation"
+    if any(token in text for token in ("mask", "gate", "envelope")):
+        return "multiplicative_envelope"
+    if any(token in text for token in ("noise", "residual", "deviation")):
+        return "additive_deviation"
+    if any(token in text for token in ("baseline", "base", "level")):
+        return "additive_level"
+    return "additive_positive_component"
+
+
+def _llm_component_workflow(
+    plan: SeriesPlan,
+    input_profile: InputProfile,
+    variable_profile: VariableProfile,
+    composition: dict[str, Any],
+    final_transform: str,
+) -> ComponentWorkflow | None:
+    mechanism = plan.metadata.get("mechanism_planning_agent")
+    if not isinstance(mechanism, dict):
+        return None
+    targets = mechanism.get("target_variables")
+    if not isinstance(targets, list) or not targets:
+        return None
+    target = next((item for item in targets if isinstance(item, dict) and item.get("components")), targets[0])
+    raw_components = target.get("components") if isinstance(target, dict) else None
+    if not isinstance(raw_components, list) or not raw_components:
+        return None
+    components: list[MechanismComponent] = []
+    for index, item in enumerate(raw_components):
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or f"llm_component_{index + 1}")
+        components.append(
+            _component(
+                name=name,
+                role=str(item.get("role", "LLM-planned mechanism component")),
+                component_semantic=str(item.get("component_semantic", "mechanism_component")),
+                value_role=_component_value_role(item),
+                sign_constraint=str(item.get("sign_or_bounds") or item.get("sign_constraint") or "signed"),
+                time_scale_behavior=str(item.get("time_scale_behavior", "unspecified")),
+                statistical_shape=str(item.get("statistical_shape", "unspecified")),
+                feature_family=_feature_family_from_llm_component(item, plan),
+                **(item.get("params", {}) if isinstance(item.get("params"), dict) else {}),
+            )
+        )
+    if not components:
+        return None
+    target_composition = target.get("composition") if isinstance(target.get("composition"), dict) else {}
+    if target_composition.get("operator"):
+        composition = {**composition, "operator": target_composition.get("operator")}
+    if target_composition.get("final_transform"):
+        final_transform = str(target_composition.get("final_transform"))
+    components = _append_common_components(components, plan)
+    return ComponentWorkflow(
+        input_profile=input_profile,
+        variable_profile=variable_profile,
+        components=components,
+        composition=composition,
+        final_transform=final_transform,
+        anomaly_target=plan.anomaly_target,
+        validator_rules=sorted(set([*_variable_constraints(plan), "llm_component_dsl_executed"])),
+        agent_trace={
+            "requirement_understanding_agent": "provided request, variables, time configuration, and constraints",
+            "mechanism_planning_agent": "provided mechanism components consumed by the executable component DSL",
+            "parameter_compiler_agent": "compiled the mechanism components into feature-family execution parameters",
+            "component_source": "llm_mechanism_plan",
+        },
+    )
+
+
 def build_component_workflow(
     description: str,
     plan: SeriesPlan,
@@ -189,6 +335,16 @@ def build_component_workflow(
         composition["clip"]["upper"] = plan.domain_params["upper_bound"]
     if "upper_bound" in plan.output_constraints:
         composition["clip"]["upper"] = plan.output_constraints["upper_bound"]
+
+    llm_workflow = _llm_component_workflow(
+        plan,
+        input_profile=input_profile,
+        variable_profile=variable_profile,
+        composition=composition,
+        final_transform=final_transform,
+    )
+    if llm_workflow is not None:
+        return llm_workflow
 
     params = plan.domain_params
     if plan.generator_type == "intermittent_event":
@@ -495,6 +651,32 @@ def build_component_workflow(
                 amplitude=plan.heat_effect,
             ),
             _component(
+                "operating_window",
+                "optional calendar or shift operating window when the plan provides operating hours",
+                "calendar_operating_window",
+                "additive_positive_component",
+                "nonnegative",
+                "time-of-day or workday-gated activity",
+                "piecewise_positive_plateau",
+                "working_day_shift",
+                start_hour=params.get("shift_start_hour"),
+                end_hour=params.get("shift_end_hour"),
+                amplitude=params.get("shift_amplitude"),
+                weekend_factor=params.get("shift_weekend_factor", params.get("weekend_factor")),
+            ) if {"shift_start_hour", "shift_end_hour", "shift_amplitude"}.issubset(params) else None,
+            _component(
+                "scheduled_pulse",
+                "optional recurring pulse process when the plan provides a pulse hour",
+                "scheduled_event",
+                "additive_positive_component",
+                "nonnegative",
+                "short recurring windows",
+                "sparse_positive_pulses",
+                "scheduled_pulse",
+                hour=params.get("batch_hour"),
+                probability=params.get("batch_probability"),
+            ) if "batch_hour" in params or "batch_probability" in params else None,
+            _component(
                 "residual_noise",
                 "unexplained local variation",
                 "signed_noise",
@@ -529,6 +711,8 @@ def build_component_workflow(
         validator_rules.append("smooth_autocorrelated")
     if plan.generator_type == "bounded_utilization":
         validator_rules.append("bounded_utilization")
+    components = [component for component in components if component is not None]
+    components = _append_common_components(components, plan)
 
     return ComponentWorkflow(
         input_profile=input_profile,
@@ -539,15 +723,16 @@ def build_component_workflow(
         anomaly_target=plan.anomaly_target,
         validator_rules=sorted(set(validator_rules)),
         agent_trace={
-            "input_profile_agent": "constructed input/reference/time context",
-            "scenario_variable_agent": "defined variable semantics, constraints, and relationships",
-            "component_mechanism_agent": "decomposed the variable into mechanism components",
-            "component_feature_planning_agent": "mapped components to executable feature families",
+            "requirement_understanding_agent": "understood request, reference priors, variables, time configuration, and constraints",
+            "mechanism_planning_agent": "decomposed variables into mechanism components and quality expectations",
+            "parameter_compiler_agent": "mapped mechanisms into executable feature families, semantics, anomalies, and validators",
         },
     )
 
 
-def _hour(length: int) -> np.ndarray:
+def _hour(length: int, context: TimeContext | None = None) -> np.ndarray:
+    if context is not None:
+        return context.hour_of_day
     return np.arange(length, dtype=float) % 24.0
 
 
@@ -564,6 +749,16 @@ def _component_stats(values: np.ndarray) -> dict[str, Any]:
     }
 
 
+def _component_is_optional(component: MechanismComponent) -> bool:
+    text = f"{component.name} {component.role} {component.component_semantic} {component.value_role}".lower()
+    return any(token in text for token in ("optional", "noise", "residual", "anomaly", "jitter"))
+
+
+def _component_is_mandatory(component: MechanismComponent) -> bool:
+    text = f"{component.name} {component.role} {component.component_semantic} {component.value_role}".lower()
+    return any(token in text for token in ("mandatory", "required", "essential", "must"))
+
+
 def _quality_report(
     component_values: dict[str, np.ndarray],
     workflow: ComponentWorkflow,
@@ -572,6 +767,8 @@ def _quality_report(
     total_std = float(np.std(composed)) or 1.0
     component_reports = []
     issues: list[str] = []
+    is_llm_dsl = workflow.agent_trace.get("component_source") == "llm_mechanism_plan"
+    feature_families = {str(component.feature_family).lower() for component in workflow.components}
     for component in workflow.components:
         values = component_values.get(component.name, np.zeros_like(composed))
         stats = _component_stats(values)
@@ -581,10 +778,38 @@ def _quality_report(
             "time_behavior": True,
             "statistical_shape": True,
             "contribution": contribution <= 3.0 or component.value_role in {"additive_level", "multiplicative_envelope"},
+            "executed": True,
         }
-        if component.sign_constraint == "nonnegative" and stats["min"] < -1e-6:
+        family = str(component.feature_family).lower()
+        if family == "unknown_component":
+            checks["executed"] = False
+            issues.append(f"{component.name} uses an unsupported feature family")
+        if family == "storm_multiplier" and not {"event_mask", "gamma_intensity"}.issubset(feature_families):
+            checks["executed"] = False
+            issues.append(f"{component.name} has no event mask and intensity to multiply")
+        if component.value_role == "multiplicative_attenuation" or (
+            is_llm_dsl and family == "cloud_drop"
+        ):
+            factor = 1.0 + np.asarray(values, dtype=float)
+            if np.any(factor < -1e-6) or np.any(factor > 1.0 + 1e-6):
+                checks["semantic"] = False
+                issues.append(f"{component.name} violates multiplicative attenuation factor bounds")
+        elif family == "cloud_drop" and component.value_role == "multiplicative_factor":
+            if stats["max"] > 1e-6:
+                checks["semantic"] = False
+                issues.append(f"{component.name} should be a nonpositive attenuation contribution")
+        elif component.sign_constraint == "nonnegative" and stats["min"] < -1e-6:
             checks["semantic"] = False
             issues.append(f"{component.name} violates nonnegative component semantics")
+        if (
+            family not in {"noise", "gaussian_noise", "residual_noise", "anomaly_strategy"}
+            and not _component_is_optional(component)
+            and (is_llm_dsl or _component_is_mandatory(component))
+            and abs(stats["mean"]) <= 1e-9
+            and stats["std"] <= 1e-9
+        ):
+            checks["executed"] = False
+            issues.append(f"{component.name} has zero contribution despite being a required component")
         if component.component_semantic in {"event_mask", "state_gate"} and stats["zero_fraction"] < 0.1:
             checks["statistical_shape"] = False
             issues.append(f"{component.name} is not sparse enough for its event semantics")
@@ -608,19 +833,290 @@ def _quality_report(
     }
 
 
+def _clip_bounds(workflow: ComponentWorkflow) -> tuple[float | None, float | None]:
+    clip = workflow.composition.get("clip", {}) if isinstance(workflow.composition, dict) else {}
+    lower = clip.get("lower")
+    upper = clip.get("upper")
+    return (
+        float(lower) if lower is not None else None,
+        float(upper) if upper is not None else None,
+    )
+
+
+def _is_additive_workflow(workflow: ComponentWorkflow) -> bool:
+    operator = str(workflow.composition.get("operator", "")).lower()
+    if "add" in operator or "sum" in operator:
+        return True
+    additive_roles = {
+        "additive_level",
+        "additive_deviation",
+        "additive_positive_component",
+        "bounded_additive_intervention",
+    }
+    return any(component.value_role in additive_roles for component in workflow.components)
+
+
+def _enforce_additive_component_bounds(
+    values: np.ndarray,
+    component_values: dict[str, np.ndarray],
+    workflow: ComponentWorkflow,
+) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+    """Budget additive components against declared bounds before validation.
+
+    This is intentionally domain-neutral: any additive process with declared lower
+    or upper support uses the same mechanism, so quality fixes do not depend on a
+    single prompt or domain name.
+    """
+    if not _is_additive_workflow(workflow):
+        return values, component_values
+    lower, upper = _clip_bounds(workflow)
+    if lower is None and upper is None:
+        return values, component_values
+
+    adjusted = {name: array.astype(float, copy=True) for name, array in component_values.items()}
+    components_by_name = {component.name: component for component in workflow.components}
+    base_names = [
+        name
+        for name, component in components_by_name.items()
+        if name in adjusted and component.value_role == "additive_level"
+    ]
+    positive_names = [
+        name
+        for name, component in components_by_name.items()
+        if name in adjusted and component.value_role == "additive_positive_component"
+    ]
+    signed_names = [
+        name
+        for name, component in components_by_name.items()
+        if name in adjusted and component.value_role in {"additive_deviation", "bounded_additive_intervention"}
+    ]
+
+    if not base_names:
+        return values, component_values
+
+    base = np.sum([adjusted[name] for name in base_names], axis=0)
+    positive = np.sum([np.maximum(adjusted[name], 0.0) for name in positive_names], axis=0) if positive_names else np.zeros_like(values)
+    if upper is not None and positive_names:
+        headroom = np.maximum(float(upper) - base, 1e-9)
+        overload = positive > headroom
+        if np.any(overload):
+            scale = np.ones_like(values, dtype=float)
+            scale[overload] = headroom[overload] / np.maximum(positive[overload], 1e-9)
+            for name in positive_names:
+                adjusted[name] = np.maximum(adjusted[name], 0.0) * scale
+            positive = np.sum([adjusted[name] for name in positive_names], axis=0)
+
+    signed = np.sum([adjusted[name] for name in signed_names], axis=0) if signed_names else np.zeros_like(values)
+    if lower is not None:
+        signed = np.maximum(signed, float(lower) - (base + positive))
+    if upper is not None:
+        signed = np.minimum(signed, float(upper) - (base + positive))
+    if signed_names:
+        original_signed = np.sum([adjusted[name] for name in signed_names], axis=0)
+        delta = signed - original_signed
+        target = next((name for name in signed_names if "noise" in name or "residual" in name), signed_names[-1])
+        adjusted[target] = adjusted[target] + delta
+
+    recomposed = np.sum(list(adjusted.values()), axis=0) if adjusted else values
+    if lower is not None:
+        recomposed = np.maximum(recomposed, float(lower))
+    if upper is not None:
+        recomposed = np.minimum(recomposed, float(upper))
+    return recomposed, adjusted
+
+
+def _component_array_from_family(
+    component: MechanismComponent,
+    plan: SeriesPlan,
+    length: int,
+    rng: np.random.Generator,
+    context: TimeContext,
+) -> np.ndarray:
+    params = {**plan.domain_params, **component.params}
+    family = str(component.feature_family).lower()
+    hour = context.hour_of_day
+    if family in {"baseline", "base_level", "level"}:
+        return np.full(length, float(params.get("level", plan.baseline)), dtype=float)
+    if family in {"linear_trend", "trend"}:
+        return linear_trend(length, float(params.get("slope", plan.trend_slope)))
+    if family in {"cyclic_signal", "positive_daily_cycle", "daily_cycle"}:
+        return daily_load_shape(
+            context,
+            amplitude=float(params.get("amplitude", plan.daily_amplitude)),
+            phase=float(params.get("phase", params.get("daily_phase", 0.0))),
+        )
+    if family == "working_day_shift":
+        start_hour = float(params.get("start_hour", params.get("shift_start_hour", 8.0)))
+        end_hour = float(params.get("end_hour", params.get("shift_end_hour", 18.0)))
+        if start_hour <= end_hour:
+            in_window = (hour >= start_hour) & (hour <= end_hour)
+        else:
+            in_window = (hour >= start_hour) | (hour <= end_hour)
+        gate = working_day_gate_from_time(
+            context,
+            weekend_factor=float(params.get("weekend_factor", params.get("shift_weekend_factor", 0.72))),
+        )
+        return float(params.get("amplitude", params.get("shift_amplitude", plan.daily_amplitude))) * in_window.astype(float) * gate
+    if family == "weekly_gate":
+        return weekly_cycle_from_time(
+            context,
+            amplitude=float(params.get("amplitude", plan.weekly_amplitude)),
+            phase=float(params.get("phase", -0.8)),
+        )
+    if family == "seasonal_cycle":
+        return seasonal_cycle_from_time(
+            context,
+            amplitude=float(params.get("amplitude", plan.seasonal_amplitude or plan.daily_amplitude)),
+            period_days=float(params.get("period_days", 365.25)),
+            phase=float(params.get("phase", 0.5)),
+        )
+    if family == "heat_index_effect":
+        return heat_index_effect_from_time(context, amplitude=float(params.get("amplitude", plan.heat_effect)))
+    if family == "gaussian_peak":
+        center = float(params.get("center", params.get("peak_hour", 12.0)))
+        width = max(float(params.get("width", 2.5)), 1e-6)
+        return float(params.get("amplitude", plan.daily_amplitude)) * np.exp(-0.5 * ((hour - center) / width) ** 2)
+    if family == "daylight_envelope":
+        sunrise = float(params.get("sunrise_hour", 6.0))
+        sunset = float(params.get("sunset_hour", 19.0))
+        if context.has_intraday_resolution:
+            daylight = (hour >= sunrise) & (hour <= sunset)
+            phase = (hour - sunrise) / max(1.0, sunset - sunrise)
+            return float(params.get("amplitude", plan.daily_amplitude)) * np.where(
+                daylight,
+                np.sin(np.pi * np.clip(phase, 0.0, 1.0)) ** 1.7,
+                0.0,
+            )
+        daylight_hours = max(sunset - sunrise, 0.0)
+        aggregation_days = max(context.step_hours / 24.0, 1.0)
+        return np.full(
+            length,
+            float(params.get("amplitude", plan.daily_amplitude)) * (daylight_hours / 12.0) * aggregation_days,
+            dtype=float,
+        )
+    if family == "event_mask":
+        probability = float(params.get("event_probability", 0.18))
+        return (rng.random(length) < probability).astype(float)
+    if family == "gamma_intensity":
+        return rng.gamma(
+            shape=max(float(params.get("shape", params.get("intensity_shape", 1.4))), 0.3),
+            scale=max(float(params.get("scale", params.get("intensity_scale", 5.0))), 0.1),
+            size=length,
+        )
+    if family == "storm_multiplier":
+        probability = float(params.get("probability", params.get("storm_probability", 0.08)))
+        multiplier = max(float(params.get("multiplier", params.get("storm_multiplier", 3.0))), 1.0)
+        return np.where(rng.random(length) < probability, multiplier - 1.0, 0.0)
+    if family == "cloud_drop":
+        probability = float(params.get("probability", params.get("cloud_probability", 0.18)))
+        drop_min = float(params.get("drop_min", params.get("cloud_drop_min", 0.35)))
+        drop_max = float(params.get("drop_max", params.get("cloud_drop_max", 0.8)))
+        active = rng.random(length) < probability
+        drops = rng.uniform(drop_min, drop_max, size=length)
+        return np.where(active, drops - 1.0, 0.0)
+    if family == "scheduled_pulse":
+        center = float(params.get("hour", params.get("batch_hour", 2.0)))
+        probability = float(params.get("probability", params.get("batch_probability", 0.35)))
+        amplitude = float(params.get("amplitude", max(plan.daily_amplitude, plan.baseline * 0.08)))
+        width = max(float(params.get("width", 1.5)), 0.25)
+        pulse_shape = np.exp(-0.5 * ((hour - center) / width) ** 2) if context.has_intraday_resolution else np.ones(length)
+        active = rng.random(length) < probability
+        return amplitude * pulse_shape * active.astype(float)
+    if family in {"noise", "gaussian_noise", "residual_noise"}:
+        return gaussian_noise(length, rng, float(params.get("sigma", plan.noise_sigma)))
+    if family == "anomaly_strategy":
+        return np.zeros(length, dtype=float)
+    return np.zeros(length, dtype=float)
+
+
+def _is_bounded_factor(values: np.ndarray, *, upper: float = 1.0) -> bool:
+    finite = values[np.isfinite(values)]
+    return bool(finite.size == 0 or (float(np.min(finite)) >= -1e-9 and float(np.max(finite)) <= upper + 1e-9))
+
+
+def _execute_llm_component_dsl(
+    plan: SeriesPlan,
+    workflow: ComponentWorkflow,
+    length: int,
+    rng: np.random.Generator,
+    context: TimeContext,
+) -> tuple[np.ndarray, dict[str, np.ndarray]] | None:
+    if workflow.agent_trace.get("component_source") != "llm_mechanism_plan":
+        return None
+    component_values = {
+        component.name: _component_array_from_family(component, plan, length, rng, context)
+        for component in workflow.components
+    }
+    additive = np.zeros(length, dtype=float)
+    envelope = np.ones(length, dtype=float)
+    multiplicative_base = np.zeros(length, dtype=float)
+    has_multiplicative_base = False
+    event_mask = None
+    event_intensity = None
+    storm_factor = np.ones(length, dtype=float)
+    storm_components: list[tuple[str, np.ndarray]] = []
+    for component in workflow.components:
+        values = component_values[component.name]
+        family = str(component.feature_family).lower()
+        if family == "event_mask":
+            event_mask = values
+        elif family == "gamma_intensity":
+            event_intensity = values
+        elif family == "storm_multiplier":
+            storm_components.append((component.name, np.maximum(values, 0.0)))
+        elif family == "cloud_drop":
+            envelope *= np.clip(1.0 + values, 0.0, 1.0)
+        elif component.value_role == "multiplicative_envelope":
+            if _is_bounded_factor(values):
+                envelope *= np.maximum(values, 0.0)
+            else:
+                multiplicative_base += np.maximum(values, 0.0)
+                has_multiplicative_base = True
+        elif component.value_role == "multiplicative_attenuation":
+            envelope *= np.clip(1.0 + values, 0.0, 1.0)
+        else:
+            additive += values
+    if storm_components and event_mask is not None:
+        active_event = (event_mask > 0.0).astype(float)
+        for name, values in storm_components:
+            event_scoped = values * active_event
+            component_values[name] = event_scoped
+            storm_factor *= 1.0 + event_scoped
+    if event_mask is not None and event_intensity is not None:
+        additive += event_mask * event_intensity * storm_factor
+    values = (multiplicative_base if has_multiplicative_base else np.zeros(length, dtype=float)) * envelope + additive
+    lower, upper = _clip_bounds(workflow)
+    if lower is not None:
+        values = np.maximum(values, lower)
+    if upper is not None:
+        values = np.minimum(values, upper)
+    return values, component_values
+
+
 def synthesize_component_base(
     plan: SeriesPlan,
     workflow: ComponentWorkflow,
     length: int,
     rng: np.random.Generator,
+    freq: str | None = None,
+    start: str | None = None,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     """Generate the pre-semantic base process from component features."""
     anomaly = np.zeros(length, dtype=int)
     component_values: dict[str, np.ndarray] = {}
     params = plan.domain_params
-    hour = _hour(length)
+    context = build_time_context(
+        length,
+        freq or workflow.input_profile.freq,
+        start or workflow.input_profile.start,
+    )
+    hour = _hour(length, context)
+    component_names = {component.name for component in workflow.components}
 
-    if plan.generator_type == "intermittent_event":
+    dsl_result = _execute_llm_component_dsl(plan, workflow, length, rng, context)
+    if dsl_result is not None:
+        values, component_values = dsl_result
+    elif plan.generator_type == "intermittent_event":
         mask = np.zeros(length, dtype=float)
         intensity = np.zeros(length, dtype=float)
         storm_boost = np.ones(length, dtype=float)
@@ -632,14 +1128,15 @@ def synthesize_component_base(
         scale = max(0.1, float(params.get("intensity_scale", 5.0)))
         storm_probability = float(params.get("storm_probability", 0.08))
         storm_multiplier = max(1.0, float(params.get("storm_multiplier", 3.0)))
+        mean_duration_steps = max(1.0, mean_duration * context.steps_per_hour)
         while cursor < length:
             if rng.random() < dry_spell_bias:
-                cursor += int(rng.integers(3, 18))
+                cursor += int(rng.integers(hours_to_steps(context, 3), hours_to_steps(context, 18) + 1))
                 continue
             if rng.random() > event_probability:
                 cursor += 1
                 continue
-            duration = int(max(1, rng.geometric(1.0 / mean_duration)))
+            duration = int(max(1, rng.geometric(1.0 / mean_duration_steps)))
             end = min(length, cursor + duration)
             is_storm = rng.random() < storm_probability
             mask[cursor:end] = 1.0
@@ -649,7 +1146,7 @@ def synthesize_component_base(
             intensity[cursor:end] = raw * np.maximum(envelope, 0.15)
             if is_storm:
                 anomaly[cursor:end] = 1
-            cursor = end + int(rng.integers(1, 10))
+            cursor = end + int(rng.integers(hours_to_steps(context, 1), hours_to_steps(context, 10) + 1))
         values = mask * intensity * storm_boost
         drizzle = (values > 0) & (rng.random(length) < 0.18)
         values[drizzle] *= rng.uniform(0.15, 0.55, size=drizzle.sum())
@@ -662,24 +1159,37 @@ def synthesize_component_base(
     elif plan.generator_type == "daylight_envelope":
         sunrise = float(params.get("sunrise_hour", 6.0))
         sunset = float(params.get("sunset_hour", 19.0))
-        daylight = (hour >= sunrise) & (hour <= sunset)
-        phase = (hour - sunrise) / max(1.0, sunset - sunrise)
-        envelope = np.where(daylight, np.sin(np.pi * np.clip(phase, 0.0, 1.0)) ** 1.7, 0.0)
-        day_index = np.arange(length) // 24
+        day_index = context.day_code
         day_factor = rng.uniform(0.82, 1.08, size=int(day_index.max()) + 1 if length else 1)
-        daylight_power = plan.daily_amplitude * envelope * day_factor[day_index]
+        if context.has_intraday_resolution:
+            daylight = (hour >= sunrise) & (hour <= sunset)
+            phase = (hour - sunrise) / max(1.0, sunset - sunrise)
+            envelope = np.where(daylight, np.sin(np.pi * np.clip(phase, 0.0, 1.0)) ** 1.7, 0.0)
+            daylight_power = plan.daily_amplitude * envelope * day_factor[day_index]
+            noise_gate = daylight
+        else:
+            daylight_hours = max(sunset - sunrise, 0.0)
+            aggregation_days = max(context.step_hours / 24.0, 1.0)
+            seasonal = 0.92 + 0.16 * np.maximum(
+                seasonal_cycle_from_time(context, amplitude=1.0, period_days=365.25, phase=-0.2),
+                -0.5,
+            )
+            daylight_power = plan.daily_amplitude * (daylight_hours / 12.0) * aggregation_days
+            daylight_power = daylight_power * seasonal * day_factor[day_index]
+            daylight = np.ones(length, dtype=bool)
+            noise_gate = np.ones(length, dtype=bool)
         attenuation = np.ones(length, dtype=float)
         cursor = 0
         while cursor < length:
             if daylight[cursor] and rng.random() < float(params.get("cloud_probability", 0.18)):
-                duration = int(rng.integers(1, 5))
+                duration = int(rng.integers(hours_to_steps(context, 1), hours_to_steps(context, 5) + 1))
                 end = min(length, cursor + duration)
                 attenuation[cursor:end] = rng.uniform(
                     float(params.get("cloud_drop_min", 0.35)),
                     float(params.get("cloud_drop_max", 0.8)),
                 )
             cursor += 1
-        noise = rng.normal(0.0, plan.noise_sigma, size=length) * daylight
+        noise = rng.normal(0.0, plan.noise_sigma, size=length) * noise_gate
         values = np.maximum(daylight_power * attenuation + noise, 0.0)
         component_values = {
             "daylight_envelope": daylight_power,
@@ -689,7 +1199,11 @@ def synthesize_component_base(
     elif plan.generator_type == "smooth_environmental":
         peak_hour = float(params.get("peak_hour", 15.0))
         baseline = np.full(length, float(plan.baseline), dtype=float)
-        cycle = plan.daily_amplitude * np.sin(2 * np.pi * (hour - peak_hour + 6) / 24)
+        cycle = (
+            plan.daily_amplitude * np.sin(2 * np.pi * (hour - peak_hour + 6) / 24)
+            if context.has_intraday_resolution
+            else np.zeros(length, dtype=float)
+        )
         trend = linear_trend(length, plan.trend_slope)
         noise = rng.normal(0.0, plan.noise_sigma, size=length)
         target = baseline + cycle + trend + noise
@@ -704,14 +1218,18 @@ def synthesize_component_base(
             "weather_noise": noise,
         }
     elif plan.generator_type == "count_process":
-        morning = np.exp(-0.5 * ((hour - float(params.get("morning_peak", 8.0))) / 2.0) ** 2)
-        evening = np.exp(-0.5 * ((hour - float(params.get("evening_peak", 18.0))) / 2.8) ** 2)
+        if context.has_intraday_resolution:
+            morning = np.exp(-0.5 * ((hour - float(params.get("morning_peak", 8.0))) / 2.0) ** 2)
+            evening = np.exp(-0.5 * ((hour - float(params.get("evening_peak", 18.0))) / 2.8) ** 2)
+        else:
+            morning = np.zeros(length, dtype=float)
+            evening = np.zeros(length, dtype=float)
         base_rate = np.full(length, plan.baseline, dtype=float)
         morning_rate = plan.daily_amplitude * 0.8 * morning
         evening_rate = plan.daily_amplitude * evening
         rate = base_rate + morning_rate + evening_rate
         if plan.weekly_enabled:
-            rate *= working_day_gate(length, weekend_factor=0.78)
+            rate *= working_day_gate_from_time(context, weekend_factor=0.78)
         rate += linear_trend(length, plan.trend_slope)
         rate = np.maximum(rate, 0.1)
         overdispersion = max(1.0, float(params.get("overdispersion", 1.35)))
@@ -724,14 +1242,15 @@ def synthesize_component_base(
         }
     elif plan.generator_type == "bounded_utilization":
         background = np.full(length, float(plan.baseline), dtype=float)
-        workload = daily_load_cycle(length, amplitude=plan.daily_amplitude, phase=float(params.get("daily_phase", 0.0)))
-        weekly = sinusoidal_cycle(length, period=24 * 7, amplitude=plan.weekly_amplitude, phase=-0.8) if plan.weekly_enabled else np.zeros(length)
+        workload = daily_load_shape(context, amplitude=plan.daily_amplitude, phase=float(params.get("daily_phase", 0.0)))
+        weekly = weekly_cycle_from_time(context, amplitude=plan.weekly_amplitude, phase=-0.8) if plan.weekly_enabled else np.zeros(length)
         noise = rng.normal(0.0, plan.noise_sigma, size=length)
         batch = np.zeros(length, dtype=float)
         batch_hour = float(params.get("batch_hour", 2.0))
+        batch_duration = hours_to_steps(context, 2)
         for i, item_hour in enumerate(hour):
             if abs(item_hour - batch_hour) < 0.5 and rng.random() < float(params.get("batch_probability", 0.35)):
-                batch[i : min(length, i + 2)] += rng.uniform(8.0, 24.0)
+                batch[i : min(length, i + batch_duration)] += rng.uniform(8.0, 24.0)
         values = background + workload + weekly + batch + noise
         values = np.clip(values, 0.0, float(params.get("upper_bound", 100.0)))
         component_values = {
@@ -743,17 +1262,17 @@ def synthesize_component_base(
     else:
         baseline = np.full(length, float(plan.baseline), dtype=float)
         trend = linear_trend(length, plan.trend_slope)
-        daily = daily_load_cycle(length, amplitude=plan.daily_amplitude, phase=float(params.get("daily_phase", 0.0)))
+        daily = daily_load_shape(context, amplitude=plan.daily_amplitude, phase=float(params.get("daily_phase", 0.0)))
         weekly = np.zeros(length, dtype=float)
         if plan.weekly_enabled:
-            weekly = sinusoidal_cycle(length, period=24 * 7, amplitude=plan.weekly_amplitude, phase=-0.8)
-            weekly += baseline * (working_day_gate(length, weekend_factor=float(params.get("weekend_factor", 0.72))) - 1.0)
+            weekly = weekly_cycle_from_time(context, amplitude=plan.weekly_amplitude, phase=-0.8)
+            weekly += baseline * (working_day_gate_from_time(context, weekend_factor=float(params.get("weekend_factor", 0.72))) - 1.0)
         seasonal = (
-            sinusoidal_cycle(length, period=max(length, 24 * 30), amplitude=plan.seasonal_amplitude, phase=0.5)
+            seasonal_cycle_from_time(context, amplitude=plan.seasonal_amplitude, period_days=30.0, phase=0.5)
             if plan.seasonal_amplitude
             else np.zeros(length)
         )
-        heat = heat_index_effect(length, amplitude=plan.heat_effect) if plan.heat_effect else np.zeros(length)
+        heat = heat_index_effect_from_time(context, amplitude=plan.heat_effect) if plan.heat_effect else np.zeros(length)
         noise = gaussian_noise(length, rng, plan.noise_sigma)
         values = baseline + trend + daily + weekly + seasonal + heat + noise
         component_values = {
@@ -766,6 +1285,9 @@ def synthesize_component_base(
             "residual_noise": noise,
         }
 
+    for component in workflow.components:
+        component_values.setdefault(component.name, np.zeros(length, dtype=float))
+    values, component_values = _enforce_additive_component_bounds(values, component_values, workflow)
     report = _quality_report(component_values, workflow, values)
     return values, anomaly, {
         "workflow": workflow.to_dict(),

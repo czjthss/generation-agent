@@ -13,10 +13,11 @@
 ## 结构
 
 - `generation_agent/features.py`: 通用时间序列特征生成器，包括周期、趋势、热效应、噪声、异常。
-- `generation_agent/planner.py`: 将一句话描述转换为生成计划。计划会包含 `domain` 和 `generator_type`，用于选择领域生成机制。设置 `OPENAI_API_KEY` 后使用 LangChain 多 Agent 调用特征工具；缺少 LLM 配置时直接报错。
-- `generation_agent/planning_prompts.py`: 定义角色化 Planning、Reflection 和直接 JSON 规划提示词。
+- `generation_agent/planner.py`: 将一句话描述转换为生成计划。计划会包含 `domain`、`generator_type` 和 `semantic_type`，用于选择领域生成机制和数学演化语义。设置 `OPENAI_API_KEY` 后使用简化后的 LangChain Agent 工作流；缺少 LLM 配置时直接报错。
+- `generation_agent/planning_prompts.py`: 定义需求理解 Agent、机制规划 Agent、参数编译 Agent、异常策略 Agent 和质量评估 Agent 的结构化提示词。
+- `generation_agent/capability_registry.py`: 从已安装模块的常量、函数签名和源码 AST 生成流水线能力清单，供异常策略、确定性校验和质量评估使用。
 - `generation_agent/specialist_workflow.py`: 面向生成任务的需求规格、过程设计、领域反证角色。
-- `generation_agent/langchain_agent.py`: LangChain 工具调用工作流。Planning 角色将领域知识映射为机制和参数；Reflection 角色独立审查计划，发现语义或约束冲突时触发一次重规划。
+- `generation_agent/langchain_agent.py`: LangChain 工具调用工作流。需求理解 Agent 和机制规划 Agent 先输出结构化 JSON，参数编译 Agent 再调用特征工具生成 `SeriesPlan`；生成后由质量评估 Agent 审核。
 - `generation_agent/feature_composer.py`: 将 LLM 选择的特征参数组合成 `SeriesPlan`。
 - `generation_agent/domain_rules.py`: 保存和复用 LLM 新增的自定义领域规则，默认写入项目根目录 `domain_rules.json`。
 - `generation_agent/synthesizer.py`: 根据计划合成时间序列。不同领域不会全部套用三角/正弦周期，而是使用领域机制。
@@ -194,7 +195,8 @@ cp .env.example .env
 ```text
 OPENAI_API_KEY=你的 key
 OPENAI_BASE_URL=https://api.ofox.ai/v1
-GENERATION_AGENT_MODEL=gpt-5.5
+GENERATION_AGENT_MODEL=deepseek/deepseek-v4-flash
+GENERATION_AGENT_COST_MODE=balanced
 ```
 
 代码会自动读取项目根目录 `.env`。已经在 shell 中设置的环境变量优先级更高，不会被 `.env` 覆盖。
@@ -211,58 +213,41 @@ https://api.ofox.ai/v1
 export OPENAI_BASE_URL="https://api.openai.com/v1"
 ```
 
-CLI 默认使用 `gpt-5.5` 进行规划；也可以显式指定：
+CLI 默认使用 `deepseek/deepseek-v4-flash` 进行规划；也可以显式指定：
 
 ```bash
 python -m generation_agent.cli "生成中国南方夏季降水量数据" \
-  --model gpt-5.5 \
+  --model deepseek/deepseek-v4-flash \
   --length 240 \
   --output outputs/rain.arrow
 ```
 
-## 角色化工作流
+可以用 `--cost-mode cheap|balanced|strict` 控制上下文和重试预算。默认是 `balanced`；`cheap` 减少重试预算，但仍保留 LLM 规划、异常策略和质量评估；`strict` 保留更完整的反思、修复和重新生成预算，适合最终验收。当前不会做“分模型使用”，所有 LLM 调用仍使用同一个 `--model`。
 
-设计参考 [CastFlow](https://github.com/Forever-Pan/CastFlow) 的角色专门化思想，并针对“从描述生成数据”的任务做了适配：
+## 简化 Agent 工作流
 
-```text
-用户描述
-  -> Planning（领域分析、机制设计、异常设计、约束自检）
-  -> LangChain 特征工具生成 SeriesPlan
-  -> Reflection 独立审查计划
-       -> REVISE：携带问题反馈重规划一次
-       -> PASS：进入执行
-  -> 确定性数值合成与语义变换
-  -> 异常注入
-  -> 约束校验与修复
-  -> Arrow
-```
-
-Planning Prompt 不再列举“某个领域必须怎样生成”的案例，而是要求 LLM 依次判断观测量、基础信号、演化语义、异常作用位置和数学约束。这样可以降低对关键词和少数示例的过拟合。已有自定义规则作为策略记忆使用，但只在观测量和上下文明确匹配时复用。
-
-借鉴 [NEXUS](https://arxiv.org/abs/2605.14389) 的“专门化推理后再综合”原则，但工作流按生成任务重新设计：
+工作流保留角色专门化思想，但将可并行或强相关的分析合并，减少 LLM 调用次数：
 
 ```text
-Specification Agent
-  -> Process Architect
-  -> Domain Challenger
-  -> Plan Compiler（LangChain tools）
-  -> Reflection Agent
+用户描述 / 参数 / 可选参考 Arrow
+  -> 需求理解 Agent
+  -> 机制规划 Agent
+  -> 参数编译 Agent（LangChain tools）
+  -> 异常策略 Agent
+  -> 本地生成内核：组件生成、组合、语义变换、确定性校验与修复
+  -> 质量评估 Agent
+       -> 硬错误：携带问题反馈修订并重新生成
+       -> 通过：写出结果
+  -> Arrow / manifest / scenarios
 ```
 
-- `Specification Agent`: 定义一个数据点究竟表示什么，包括单位、时间口径、取值空间和不变量。
-- `Process Architect`: 设计随机过程、事件机制、时间依赖、噪声、语义递推和异常作用位置。
-- `Domain Challenger`: 主动寻找不符合物理、统计或业务常识的机制，并给出必须修正的条件。
-- `Plan Compiler`: 将前三者的证据编译成唯一、可执行的 `SeriesPlan`。
-- `Reflection Agent`: 审查编译结果，必要时触发一次重规划。
+- `需求理解 Agent`: 一次性理解用户请求、生成模式、时间参数、参考序列画像、变量、单位、变量关系、场景覆盖和业务约束。
+- `机制规划 Agent`: 把目标变量拆成现实机制组件，说明每个组件的时间尺度、统计形态、语义角色、正常事件和异常敏感性。
+- `参数编译 Agent`: 将机制组件编译成可执行 `SeriesPlan`，选择特征族、语义机制、参数、异常候选位置和 validator 规则。
+- `异常策略 Agent`: 根据用户控制和机制计划决定是否注入异常、异常作用位置、类型、强度和持续时间。
+- `质量评估 Agent`: 只基于摘要、确定性校验、组件报告和执行证据审查结果；不输出或修改任何数据点。
 
-系统固定运行完整多 Agent 工作流，不再提供单 Agent 或自动路由模式。多个角色可以共用同一个模型服务，但具有独立 Prompt、上下文和结构化输出。
-
-规划优先级：
-
-- 有 `OPENAI_API_KEY` 时使用完整 LangChain 多 Agent 工作流，Reflection 审查并按需触发一次重规划。
-- 如果没有合适的已知工具: LLM 可以调用 `create_custom_domain_rule` 创建新领域规则，规则会写入 `domain_rules.json`。
-- LangChain 多 Agent 调用失败、API key 缺失或额度不足时直接报错，不再自动回退到无 LLM 本地规则。
-- 底层确定性生成器仍负责数值合成、语义变换、异常注入、约束修复和 Arrow 存储。
+系统仍然要求 LLM 参与领域理解、机制规划、参数决策、异常策略和质量判断；具体数值始终由本地数值生成内核计算。LLM 调用失败、API key 缺失或额度不足时直接报错，不再自动回退到无 LLM 本地规则。
 
 ## 启动网页界面
 
@@ -282,7 +267,7 @@ python -m generation_agent.web_app
 - 公共参数：序列长度、频率、起始时间、随机种子、模型、参考 Arrow、异常开关和异常强度。
 - 右侧会展示生成序列的抽样趋势图，只绘制少量等间距点以避免浏览器加载全量数据。
 
-大规模数据集默认使用 Arrow IPC 紧凑存储：每行只保存 `value`、`anomaly` 和必要的语义数值列，`value` 为 `float32`；时间戳通过 `start`、`frequency`、`length` 在 manifest/Arrow metadata 中恢复，`unit/domain/generator_type/semantic_type` 等行级重复元数据也放入 manifest/Arrow metadata。
+大规模数据集默认使用 Arrow IPC 紧凑存储：每行只保存 `value`、`anomaly` 和必要的语义数值列，`value` 为 `float32`；时间戳通过 `start`、`frequency`、`length` 在 manifest/Arrow metadata 中恢复，`unit/domain/generator_type/semantic_type/cost_mode` 等行级重复元数据也放入 manifest/Arrow metadata。LLM 参与规划、异常策略和质量评估；具体数值始终由本地数值生成内核计算。
 
 默认只监听本机。修改端口可以使用：
 
@@ -309,7 +294,6 @@ MCP 工具说明：
 - `plan_time_series(description, model=None)`: 生成结构化计划 JSON。
 - `generate_time_series(..., anomalies="auto", anomaly_severity=None, ...)`: 直接生成时间序列，并允许覆盖异常开关和强度。
 - `generate_time_series_code(...)`: 返回独立 Python 生成脚本。
-- `synthesize_from_plan(plan_json, ...)`: 从计划 JSON 生成时间序列。
 
 ## 示例输出字段
 
@@ -331,4 +315,4 @@ MCP 工具说明：
 - `growth_rate`: 饱和增长速率。
 - `driver`、`lagged_driver`: 多变量滞后过程。
 
-确定性校验结果与 Series Auditor 结果会保存在运行时 DataFrame 属性及数据集 `manifest.json` 中。
+需求理解、机制规划、参数编译证据、异常策略、确定性校验结果与质量评估结果会保存在运行时 DataFrame 属性、Arrow sidecar metadata、Arrow metadata 及数据集 `manifest.json` 中。

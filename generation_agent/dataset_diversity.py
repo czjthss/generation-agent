@@ -57,6 +57,7 @@ def diversify_plan(
     rng = np.random.default_rng(rng_seed)
     params = dict(plan.domain_params)
     metadata = dict(plan.metadata)
+    mechanism_variant = "parameter_perturbation"
     metadata.update(
         {
             "dataset_diversity": {
@@ -74,6 +75,10 @@ def diversify_plan(
     seasonal_amplitude = _multiply(plan.seasonal_amplitude, rng, scale * 1.4, minimum=0.0)
     heat_effect = _multiply(plan.heat_effect, rng, scale * 1.4, minimum=0.0)
     noise_sigma = _multiply(plan.noise_sigma, rng, scale * 1.5, minimum=0.0)
+    anomaly_enabled = bool(plan.anomaly_enabled)
+    anomaly_count = plan.anomaly_count
+    anomaly_width = plan.anomaly_width
+    anomaly_magnitude = plan.anomaly_magnitude
     trend_slope = float(plan.trend_slope)
     if trend_slope:
         trend_slope *= float(rng.uniform(1.0 - scale, 1.0 + scale))
@@ -81,6 +86,18 @@ def diversify_plan(
         trend_slope = float(rng.normal(0.0, max(1.0, baseline * 0.03 * scale)))
 
     if plan.generator_type == "intermittent_event":
+        if strength in {"medium", "high"} and rng.random() < 0.55:
+            mechanism_variant = str(rng.choice(["convective_bursts", "long_dry_spells", "persistent_light_events"]))
+            if mechanism_variant == "convective_bursts":
+                params["storm_probability"] = max(float(params.get("storm_probability", 0.08)), 0.22)
+                params["storm_multiplier"] = max(float(params.get("storm_multiplier", 3.0)), 4.5)
+                params["mean_duration"] = max(1.0, float(params.get("mean_duration", 5.0)) * 0.65)
+            elif mechanism_variant == "long_dry_spells":
+                params["dry_spell_bias"] = min(0.95, max(float(params.get("dry_spell_bias", 0.6)), 0.78))
+                params["event_probability"] = min(float(params.get("event_probability", 0.18)), 0.12)
+            else:
+                params["storm_probability"] = min(float(params.get("storm_probability", 0.08)), 0.04)
+                params["mean_duration"] = max(float(params.get("mean_duration", 5.0)), 8.0)
         params["event_probability"] = _bounded_probability(
             float(params.get("event_probability", 0.18)) + rng.normal(0.0, 0.12 * scale),
             0.01,
@@ -101,6 +118,13 @@ def diversify_plan(
         )
         params["storm_multiplier"] = _multiply(float(params.get("storm_multiplier", 3.0)), rng, scale, 1.0)
     elif plan.generator_type == "daylight_envelope":
+        if strength in {"medium", "high"} and rng.random() < 0.5:
+            mechanism_variant = str(rng.choice(["clear_sky", "broken_clouds", "persistent_cloud_cover"]))
+            if mechanism_variant == "clear_sky":
+                params["cloud_probability"] = min(float(params.get("cloud_probability", 0.18)), 0.06)
+            elif mechanism_variant == "persistent_cloud_cover":
+                params["cloud_probability"] = max(float(params.get("cloud_probability", 0.18)), 0.45)
+                params["cloud_drop_min"] = min(float(params.get("cloud_drop_min", 0.35)), 0.2)
         sunrise_shift = float(rng.normal(0.0, 1.2 * scale))
         sunset_shift = float(rng.normal(0.0, 1.2 * scale))
         params["sunrise_hour"] = float(np.clip(float(params.get("sunrise_hour", 6.0)) + sunrise_shift, 4.0, 9.0))
@@ -118,10 +142,23 @@ def diversify_plan(
         params["inertia"] = float(np.clip(float(params.get("inertia", 0.88)) + rng.normal(0.0, 0.18 * scale), 0.35, 0.98))
         params["peak_hour"] = float((float(params.get("peak_hour", 15.0)) + rng.normal(0.0, 4.0 * scale)) % 24)
     elif plan.generator_type == "count_process":
+        if strength == "high" and rng.random() < 0.45:
+            mechanism_variant = str(rng.choice(["commute_double_peak", "event_day_single_peak", "flat_background"]))
+            if mechanism_variant == "event_day_single_peak":
+                params["morning_peak"] = float(rng.uniform(10.0, 16.0))
+                params["evening_peak"] = params["morning_peak"]
+            elif mechanism_variant == "flat_background":
+                daily_amplitude *= 0.35
         params["morning_peak"] = float((float(params.get("morning_peak", 8.0)) + rng.normal(0.0, 3.0 * scale)) % 24)
         params["evening_peak"] = float((float(params.get("evening_peak", 18.0)) + rng.normal(0.0, 3.0 * scale)) % 24)
         params["overdispersion"] = _multiply(float(params.get("overdispersion", 1.35)), rng, scale, 1.0)
     elif plan.generator_type == "bounded_utilization":
+        if strength in {"medium", "high"} and rng.random() < 0.5:
+            mechanism_variant = str(rng.choice(["batch_heavy", "interactive_workload", "near_capacity"]))
+            if mechanism_variant == "batch_heavy":
+                params["batch_probability"] = max(float(params.get("batch_probability", 0.35)), 0.65)
+            elif mechanism_variant == "near_capacity":
+                baseline = max(baseline, float(params.get("upper_bound", 100.0)) * 0.72)
         params["batch_hour"] = float((float(params.get("batch_hour", 2.0)) + rng.normal(0.0, 5.0 * scale)) % 24)
         params["batch_probability"] = _bounded_probability(
             float(params.get("batch_probability", 0.35)) + rng.normal(0.0, 0.25 * scale),
@@ -130,8 +167,56 @@ def diversify_plan(
         )
         params["upper_bound"] = _multiply(float(params.get("upper_bound", 100.0)), rng, scale * 0.4, 1.0)
     else:
-        params["daily_phase"] = float(rng.uniform(-6.0, 6.0) * scale)
-        params["weekend_factor"] = float(np.clip(rng.normal(0.72, 0.25 * scale), 0.35, 1.05))
+        if strength in {"medium", "high"}:
+            mechanism_variant = str(
+                rng.choice(
+                    [
+                        "single_operating_window",
+                        "double_operating_window",
+                        "near_continuous_operation",
+                        "driver_response_dominated",
+                        "scheduled_event_pulses",
+                        "strong_calendar_gate",
+                        "phase_shifted_operation",
+                        "trend_dominated",
+                        "seasonal_dominated",
+                    ]
+                )
+            )
+            if mechanism_variant == "single_operating_window":
+                params["shift_start_hour"] = float(rng.uniform(7.0, 10.0))
+                params["shift_end_hour"] = float(rng.uniform(15.0, 20.0))
+                params["shift_amplitude"] = max(daily_amplitude * 0.7, baseline * 0.10)
+                params["weekend_factor"] = float(np.clip(rng.normal(0.50, 0.12), 0.15, 0.85))
+            elif mechanism_variant == "double_operating_window":
+                params["shift_start_hour"] = float(rng.uniform(5.5, 8.0))
+                params["shift_end_hour"] = float(rng.uniform(20.0, 23.5))
+                params["shift_amplitude"] = max(daily_amplitude, baseline * 0.16)
+                params["weekend_factor"] = float(np.clip(rng.normal(0.68, 0.10), 0.35, 0.95))
+            elif mechanism_variant == "near_continuous_operation":
+                daily_amplitude *= 0.35
+                weekly_amplitude *= 0.25
+                baseline *= 1.12
+                params["weekend_factor"] = float(np.clip(rng.normal(0.92, 0.05), 0.75, 1.05))
+            elif mechanism_variant == "driver_response_dominated":
+                heat_effect = max(heat_effect, baseline * float(rng.uniform(0.06, 0.20)))
+                seasonal_amplitude = max(seasonal_amplitude, baseline * float(rng.uniform(0.03, 0.12)))
+            elif mechanism_variant == "scheduled_event_pulses":
+                params["batch_hour"] = float(rng.uniform(0.0, 23.0))
+                params["batch_probability"] = float(np.clip(rng.normal(0.35, 0.18), 0.05, 0.8))
+                params["shift_amplitude"] = max(params.get("shift_amplitude", 0.0), baseline * float(rng.uniform(0.04, 0.12)))
+            elif mechanism_variant == "strong_calendar_gate":
+                params["weekend_factor"] = float(np.clip(rng.normal(0.45, 0.12), 0.15, 0.8))
+            elif mechanism_variant == "trend_dominated":
+                daily_amplitude *= 0.45
+                trend_slope = float(rng.normal(0.0, max(1.0, baseline * 0.18)))
+            elif mechanism_variant == "seasonal_dominated":
+                daily_amplitude *= 0.55
+                seasonal_amplitude = max(seasonal_amplitude, baseline * float(rng.uniform(0.08, 0.25)))
+        params["daily_phase"] = float(params.get("daily_phase", rng.uniform(-6.0, 6.0) * scale))
+        params["weekend_factor"] = float(
+            params.get("weekend_factor", np.clip(rng.normal(0.72, 0.25 * scale), 0.35, 1.05))
+        )
 
     if plan.semantic_type == "cumulative":
         params["daily_phase"] = float(params.get("daily_phase", rng.uniform(-4.0, 4.0) * scale))
@@ -139,10 +224,7 @@ def diversify_plan(
         anomaly_count = max(1, int(round(plan.anomaly_count * rng.uniform(0.75, 1.35))))
         anomaly_width = max(1, int(round(plan.anomaly_width * rng.uniform(0.75, 1.8))))
         anomaly_magnitude = _multiply(plan.anomaly_magnitude, rng, scale * 0.7, 0.1)
-    else:
-        anomaly_count = plan.anomaly_count
-        anomaly_width = plan.anomaly_width
-        anomaly_magnitude = plan.anomaly_magnitude
+    metadata.setdefault("dataset_diversity", {})["mechanism_variant"] = mechanism_variant
 
     return replace(
         plan,
@@ -154,6 +236,7 @@ def diversify_plan(
         seasonal_amplitude=seasonal_amplitude,
         heat_effect=heat_effect,
         noise_sigma=noise_sigma,
+        anomaly_enabled=anomaly_enabled,
         anomaly_count=anomaly_count,
         anomaly_magnitude=anomaly_magnitude,
         anomaly_width=anomaly_width,

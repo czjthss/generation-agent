@@ -11,7 +11,7 @@ from .env import load_project_env
 load_project_env()
 
 
-DEFAULT_LLM_MODEL = "gpt-5.5"
+DEFAULT_LLM_MODEL = "deepseek/deepseek-v4-flash"
 DEFAULT_OPENAI_BASE_URL = "https://api.ofox.ai/v1"
 
 
@@ -96,12 +96,12 @@ def heuristic_plan(description: str) -> SeriesPlan:
 
     plan = SeriesPlan(metadata={"planner": "heuristic", "description": description})
 
-    if any(k in description for k in ["累计", "累积", "总计至今", "累计值"]):
+    if any(k in text for k in ["cumulative", "accumulated", "total-to-date", "running total"]):
         plan.semantic_type = "cumulative"
         plan.semantic_config = {"initial_value": 0.0, "allow_negative_increment": False}
         plan.output_constraints = {"nonnegative": True, "monotonic": "nondecreasing"}
         plan.anomaly_target = "increment"
-    elif any(k in description for k in ["库存", "余额", "蓄水量", "水库水量", "电池电量", "soc"]):
+    elif any(k in text for k in ["inventory", "stock", "balance", "reservoir", "battery", "soc"]):
         plan.semantic_type = "stock_flow"
         plan.semantic_config = {
             "initial_value": 1000.0,
@@ -110,22 +110,22 @@ def heuristic_plan(description: str) -> SeriesPlan:
         }
         plan.output_constraints = {"nonnegative": True, "conservation": True}
         plan.anomaly_target = "flow"
-    elif any(k in description for k in ["随机游走", "股票价格", "股价", "汇率", "资产价格"]):
+    elif any(k in text for k in ["random walk", "stock price", "exchange rate", "asset price"]):
         plan.semantic_type = "random_walk"
         plan.semantic_config = {"initial_value": 100.0, "drift": 0.02, "volatility": 1.0}
         plan.output_constraints = {"nonnegative": True}
         plan.anomaly_target = "step"
-    elif any(k in description for k in ["衰减", "恢复", "药物浓度", "故障恢复", "冷却"]):
+    elif any(k in text for k in ["decay", "recovery", "drug concentration", "fault recovery", "cooling"]):
         plan.semantic_type = "decay_recovery"
         plan.semantic_config = {"equilibrium": 0.0, "recovery_rate": 0.12, "impulse": 20.0}
         plan.output_constraints = {"nonnegative": True}
         plan.anomaly_target = "impulse"
-    elif any(k in description for k in ["饱和增长", "市场渗透", "用户增长", "logistic", "gompertz"]):
+    elif any(k in text for k in ["saturation growth", "market penetration", "user growth", "logistic", "gompertz"]):
         plan.semantic_type = "saturation_growth"
         plan.semantic_config = {"initial_value": 10.0, "capacity": 1000.0, "growth_rate": 0.06}
         plan.output_constraints = {"nonnegative": True, "monotonic": "nondecreasing"}
         plan.anomaly_target = "growth_rate"
-    elif any(k in description for k in ["开停机", "工况", "状态切换", "运行状态", "故障状态"]):
+    elif any(k in text for k in ["regime", "state switching", "operating state", "fault state"]):
         plan.semantic_type = "regime_switching"
         plan.semantic_config = {
             "states": [0.4, 1.0, 1.5],
@@ -133,15 +133,13 @@ def heuristic_plan(description: str) -> SeriesPlan:
         }
         plan.output_constraints = {"nonnegative": True}
         plan.anomaly_target = "state"
-    elif any(k in description for k in ["滞后", "影响", "相关变量", "多变量"]):
+    elif any(k in text for k in ["lag", "influence", "related variables", "multivariate"]):
         plan.semantic_type = "multivariate_lag"
         plan.semantic_config = {"driver_name": "driver", "lag": 2, "coefficient": 0.7}
         plan.relationships = [{"source": "driver", "target": "value", "lag": 2, "coefficient": 0.7}]
         plan.anomaly_target = "driver"
 
-    if any(k in description for k in ["降水", "降雨", "雨量", "降雨量", "降水量", "暴雨", "小雨", "中雨", "大雨"]) or any(
-        k in text for k in ["rain", "rainfall", "precipitation"]
-    ):
+    if any(k in text for k in ["rain", "rainfall", "precipitation", "storm", "drizzle"]):
         plan.domain = "precipitation"
         plan.generator_type = "intermittent_event"
         plan.unit = "mm"
@@ -164,7 +162,7 @@ def heuristic_plan(description: str) -> SeriesPlan:
             "storm_multiplier": 3.0,
         }
         plan.metadata["domain_knowledge"] = "precipitation is generated as sparse storm events, not a smooth daily cycle"
-    elif any(k in description for k in ["光伏", "太阳能", "发电功率", "光照"]) or "solar" in text:
+    elif any(k in text for k in ["solar", "photovoltaic", "pv power", "irradiance", "sunlight"]):
         plan.domain = "solar_power"
         plan.generator_type = "daylight_envelope"
         plan.unit = "kW"
@@ -180,7 +178,7 @@ def heuristic_plan(description: str) -> SeriesPlan:
             "cloud_drop_max": 0.8,
         }
         plan.metadata["domain_knowledge"] = "solar power follows daylight envelope and is zero at night"
-    elif any(k in description for k in ["温度", "气温", "室温", "冷链"]) or "temperature" in text:
+    elif any(k in text for k in ["temperature", "air temperature", "room temperature", "cold chain"]):
         plan.domain = "temperature"
         plan.generator_type = "smooth_environmental"
         plan.unit = "°C"
@@ -190,9 +188,7 @@ def heuristic_plan(description: str) -> SeriesPlan:
         plan.lower_bound = None
         plan.domain_params = {"inertia": 0.88, "peak_hour": 15.0}
         plan.metadata["domain_knowledge"] = "temperature changes smoothly with inertia instead of abrupt independent noise"
-    elif any(k in description for k in ["销售额", "营业额", "营收", "成交额"]) or any(
-        k in text for k in ["sales", "revenue", "turnover"]
-    ):
+    elif any(k in text for k in ["sales", "revenue", "turnover", "gmv"]):
         plan.domain = "sales"
         plan.generator_type = "cyclic_signal"
         plan.unit = "CNY"
@@ -203,9 +199,7 @@ def heuristic_plan(description: str) -> SeriesPlan:
         plan.noise_sigma = 350.0
         plan.lower_bound = 0.0
         plan.metadata["domain_knowledge"] = "sales amount is generated as nonnegative period revenue before optional accumulation"
-    elif any(k in description for k in ["交通", "车流", "客流", "地铁", "订单", "请求", "qps", "api"]) or any(
-        k in text for k in ["traffic", "orders", "requests", "qps", "api"]
-    ):
+    elif any(k in text for k in ["traffic", "vehicle flow", "passenger flow", "metro", "orders", "requests", "qps", "api"]):
         plan.domain = "demand_count"
         plan.generator_type = "count_process"
         plan.unit = "count"
@@ -217,9 +211,7 @@ def heuristic_plan(description: str) -> SeriesPlan:
         plan.lower_bound = 0.0
         plan.domain_params = {"morning_peak": 8.0, "evening_peak": 18.0, "overdispersion": 1.35}
         plan.metadata["domain_knowledge"] = "count demand uses peaks and over-dispersed nonnegative counts"
-    elif any(k in description for k in ["cpu", "内存", "服务器", "数据库", "网关"]) or any(
-        k in text for k in ["server", "cpu", "memory", "database"]
-    ):
+    elif any(k in text for k in ["server", "cpu", "memory", "database", "gateway"]):
         plan.domain = "server_metric"
         plan.generator_type = "bounded_utilization"
         plan.unit = "%"
@@ -231,7 +223,7 @@ def heuristic_plan(description: str) -> SeriesPlan:
         plan.lower_bound = 0.0
         plan.domain_params = {"upper_bound": 100.0, "batch_hour": 2.0, "batch_probability": 0.35}
         plan.metadata["domain_knowledge"] = "server utilization is bounded and can include batch jobs or bursts"
-    elif any(k in description for k in ["电力", "负载", "用电", "功率"]) or "load" in text:
+    elif any(k in text for k in ["electric", "electricity", "load", "power"]):
         plan.domain = "electric_load"
         plan.generator_type = "cyclic_signal"
         plan.unit = "kW"
@@ -241,12 +233,7 @@ def heuristic_plan(description: str) -> SeriesPlan:
         plan.weekly_amplitude = 35.0
         plan.noise_sigma = 22.0
         plan.trend_slope = 20.0
-    if any(k in description for k in ["工业园", "工厂", "制造", "园区"]):
-        plan.baseline *= 1.6
-        plan.daily_amplitude *= 1.35
-        plan.weekly_amplitude *= 1.4
-        plan.metadata["site_type"] = "industrial_park"
-    if any(k in description for k in ["南方", "华南", "广东", "广西", "福建", "海南"]):
+    if any(k in text for k in ["south china", "guangdong", "guangxi", "fujian", "hainan"]):
         if plan.domain == "precipitation":
             plan.domain_params["event_probability"] = max(plan.domain_params.get("event_probability", 0.18), 0.24)
             plan.domain_params["dry_spell_bias"] = min(plan.domain_params.get("dry_spell_bias", 0.48), 0.42)
@@ -254,7 +241,7 @@ def heuristic_plan(description: str) -> SeriesPlan:
         elif plan.domain in {"electric_load", "generic"}:
             plan.heat_effect = max(plan.heat_effect, 85.0)
         plan.metadata["region"] = "south_china"
-    if any(k in description for k in ["夏季", "高温", "炎热", "空调"]):
+    if any(k in text for k in ["summer", "high temperature", "hot", "air conditioning"]):
         if plan.domain == "precipitation":
             plan.domain_params["event_probability"] = max(plan.domain_params.get("event_probability", 0.18), 0.28)
             plan.domain_params["dry_spell_bias"] = min(plan.domain_params.get("dry_spell_bias", 0.48), 0.36)
@@ -269,24 +256,24 @@ def heuristic_plan(description: str) -> SeriesPlan:
             plan.heat_effect = max(plan.heat_effect, 130.0)
             plan.seasonal_amplitude = max(plan.seasonal_amplitude, 30.0)
         plan.metadata["season"] = "summer"
-    if any(k in description for k in ["暴雨", "强降雨", "台风"]):
+    if any(k in text for k in ["storm", "heavy rainfall", "typhoon"]):
         plan.domain_params["storm_probability"] = max(plan.domain_params.get("storm_probability", 0.08), 0.28)
         plan.domain_params["storm_multiplier"] = max(plan.domain_params.get("storm_multiplier", 3.0), 5.0)
-    if any(k in description for k in ["小雨", "毛毛雨"]):
+    if any(k in text for k in ["light rain", "drizzle"]):
         plan.domain_params["intensity_scale"] = min(plan.domain_params.get("intensity_scale", 5.0), 2.0)
         plan.domain_params["storm_probability"] = 0.02
-    if any(k in description for k in ["异常", "故障", "尖峰", "突增", "突降"]):
+    if any(k in text for k in ["anomaly", "fault", "spike", "surge", "drop"]):
         plan.anomaly_enabled = True
         plan.anomaly_count = 4
         plan.anomaly_magnitude = 3.5
         plan.anomaly_width = 2
-        if "突降" in description:
+        if "drop" in text:
             plan.anomaly_kind = "drop"
-        elif "突增" in description or "尖峰" in description:
+        elif "surge" in text or "spike" in text:
             plan.anomaly_kind = "positive_spike"
-    if any(k in description for k in ["下降", "衰减", "减少"]):
+    if any(k in text for k in ["decline", "decrease", "decay"]):
         plan.trend_slope = -abs(plan.trend_slope or 10.0)
-    if any(k in description for k in ["增长", "上升", "增加"]):
+    if any(k in text for k in ["growth", "increase", "rise"]):
         plan.trend_slope = abs(plan.trend_slope or 10.0)
 
     metric_match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*(kw|mw|kwh|°c|℃|mm|%)", text)
@@ -306,6 +293,7 @@ def plan_from_description(
     description: str,
     model: str | None = None,
     reference_profile: dict[str, Any] | None = None,
+    cost_mode: str = "balanced",
 ) -> SeriesPlan:
     def finalize(plan: SeriesPlan) -> SeriesPlan:
         from .reference_profiler import apply_reference_priors
@@ -314,12 +302,16 @@ def plan_from_description(
 
     if not model:
         raise RuntimeError("LLM model is required; no-LLM generation mode has been removed")
+    from .dependency_check import ensure_llm_dependencies
+
+    ensure_llm_dependencies()
     from .langchain_agent import plan_with_langchain_tools
 
     planned = plan_with_langchain_tools(
         description,
         model=model,
         reference_profile=reference_profile,
+        cost_mode=cost_mode,
     )
     if planned is None:
         raise RuntimeError("LLM agent planning returned no valid plan")

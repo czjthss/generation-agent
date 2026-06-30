@@ -62,9 +62,31 @@ def apply_semantic_process(
         return values, flags, columns
 
     if semantic_type == "stock_flow":
-        scale = max(float(np.mean(np.abs(base_values))) * 0.08, 1.0)
-        inflow = rng.gamma(2.0, scale / 2.0, size=length) * float(params.get("inflow_scale", 1.0))
-        outflow = rng.gamma(2.0, scale / 2.0, size=length) * float(params.get("outflow_scale", 0.85))
+        raw_strength = np.asarray(base_values, dtype=float)
+        finite = raw_strength[np.isfinite(raw_strength)]
+        if finite.size == 0:
+            finite = np.array([float(plan.baseline)])
+        shifted = raw_strength - min(float(np.min(finite)), 0.0)
+        strength = np.maximum(shifted, 0.0)
+        mean_strength = float(np.mean(strength)) if np.any(strength > 0.0) else float(np.mean(np.abs(finite)))
+        if mean_strength < 1e-9:
+            strength = np.ones(length, dtype=float)
+            mean_strength = 1.0
+        normalized_strength = strength / (mean_strength + 1e-9)
+        scale = max(float(params.get("flow_scale", mean_strength * 0.08)), 1.0)
+        inflow_base = normalized_strength * scale * float(params.get("inflow_scale", 1.0))
+        outflow_lag = max(0, int(params.get("outflow_lag", 0)))
+        outflow_strength = np.roll(normalized_strength, outflow_lag)
+        if outflow_lag:
+            outflow_strength[:outflow_lag] = normalized_strength[0]
+        outflow_base = outflow_strength * scale * float(params.get("outflow_scale", 0.85))
+        variability = max(float(params.get("flow_variability", 0.18)), 0.0)
+        if variability:
+            inflow = inflow_base * rng.lognormal(mean=-0.5 * variability**2, sigma=variability, size=length)
+            outflow = outflow_base * rng.lognormal(mean=-0.5 * variability**2, sigma=variability, size=length)
+        else:
+            inflow = inflow_base.copy()
+            outflow = outflow_base.copy()
         flags = np.zeros(length, dtype=int)
         if plan.anomaly_target in {"flow", "inflow"}:
             inflow, flags = add_anomalies(inflow, rng, _anomaly_config(plan))
@@ -111,7 +133,34 @@ def apply_semantic_process(
     if semantic_type == "random_walk":
         volatility = float(params.get("volatility", max(plan.noise_sigma, 1.0)))
         drift = float(params.get("drift", plan.trend_slope / max(length, 1)))
-        steps = drift + volatility * _standardize(base_values)
+        distribution = str(params.get("innovation_distribution", "normal")).lower()
+        if distribution in {"student_t", "t", "heavy_tail", "heavy-tailed"}:
+            df = max(float(params.get("innovation_df", 5.0)), 2.1)
+            innovations = rng.standard_t(df=df, size=length) / np.sqrt(df / (df - 2.0))
+        else:
+            innovations = rng.normal(0.0, 1.0, size=length)
+        ar = float(params.get("innovation_ar", params.get("innovation_autocorrelation", 0.0)))
+        ar = float(np.clip(ar, -0.95, 0.95))
+        if abs(ar) > 1e-9:
+            filtered = np.empty(length, dtype=float)
+            previous = 0.0
+            scale = np.sqrt(max(1.0 - ar * ar, 1e-9))
+            for i, innovation in enumerate(innovations):
+                previous = ar * previous + scale * innovation
+                filtered[i] = previous
+            innovations = filtered
+        if bool(params.get("regime_volatility", False)) and length:
+            switch_probability = float(params.get("volatility_switch_probability", 0.03))
+            high_multiplier = max(float(params.get("high_volatility_multiplier", 2.5)), 1.0)
+            state = np.ones(length, dtype=float)
+            high = False
+            for i in range(length):
+                if rng.random() < switch_probability:
+                    high = not high
+                state[i] = high_multiplier if high else 1.0
+            innovations = innovations * state
+            columns["volatility_state"] = state
+        steps = drift + volatility * innovations
         steps, flags = _inject_if_target(steps, plan, rng, {"step", "increment"})
         initial = float(params.get("initial_value", max(plan.baseline, 1.0)))
         values = initial + np.cumsum(steps)

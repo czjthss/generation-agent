@@ -56,6 +56,8 @@ def build_feature_plan(
     output_constraints: dict | None = None,
     variables: list[dict] | None = None,
     relationships: list[dict] | None = None,
+    components: list[dict] | None = None,
+    composition: dict | None = None,
     anomaly_enabled: bool = False,
     anomaly_severity: str = "medium",
     anomaly_target: str = "value",
@@ -128,5 +130,19 @@ def build_feature_plan(
             "planner": "feature_composer",
             "description": description,
             "feature_rationale": rationale,
+            **({
+                "mechanism_planning_agent": {
+                    "target_variables": [
+                        {
+                            "name": (variables or [{"name": "value"}])[0].get("name", "value") if isinstance((variables or [{"name": "value"}])[0], dict) else "value",
+                            "mechanism_summary": rationale or "LLM-compiled mechanism component plan",
+                            "components": components or [],
+                            "composition": composition or {"operator": "mixed", "final_transform": semantic_type},
+                            "constraints": list((output_constraints or {}).keys()),
+                        }
+                    ],
+                    "source": "finalize_feature_plan.components_json",
+                }
+            } if components else {}),
         },
     )

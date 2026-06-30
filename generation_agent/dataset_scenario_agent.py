@@ -92,15 +92,16 @@ class DatasetScenarioDesigner:
             raise ValueError("series_count must be positive")
         if not self.model or not os.getenv("OPENAI_API_KEY"):
             raise RuntimeError("OPENAI_API_KEY and model are required for dataset scenario Agent")
+        from .dependency_check import ensure_llm_dependencies
+
+        ensure_llm_dependencies()
 
         try:
             from langchain_core.messages import HumanMessage, SystemMessage
-            from langchain_openai import ChatOpenAI
+            from .llm_client import create_chat_openai
 
-            llm = ChatOpenAI(
+            llm = create_chat_openai(
                 model=self.model,
-                api_key=os.getenv("OPENAI_API_KEY"),
-                base_url=os.getenv("OPENAI_BASE_URL", DEFAULT_OPENAI_BASE_URL),
                 temperature=0.2,
                 max_completion_tokens=3000,
                 timeout=90,
