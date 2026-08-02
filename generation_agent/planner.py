@@ -11,7 +11,7 @@ from .env import load_project_env
 load_project_env()
 
 
-DEFAULT_LLM_MODEL = "gpt-4.1-mini"
+DEFAULT_LLM_MODEL = "gpt-5.5"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 
 

@@ -195,7 +195,7 @@ cp .env.example .env
 ```text
 OPENAI_API_KEY=你的 key
 OPENAI_BASE_URL=https://api.openai.com/v1
-GENERATION_AGENT_MODEL=gpt-4.1-mini
+GENERATION_AGENT_MODEL=gpt-5.5
 GENERATION_AGENT_COST_MODE=balanced
 ```
 
@@ -213,11 +213,11 @@ https://api.openai.com/v1
 export OPENAI_BASE_URL="https://api.openai.com/v1"
 ```
 
-CLI 默认使用 `gpt-4.1-mini` 进行规划；也可以显式指定：
+CLI 默认使用 `gpt-5.5` 进行规划；也可以显式指定：
 
 ```bash
 python -m generation_agent.cli "生成中国南方夏季降水量数据" \
-  --model gpt-4.1-mini \
+  --model gpt-5.5 \
   --length 240 \
   --output outputs/rain.arrow
 ```
