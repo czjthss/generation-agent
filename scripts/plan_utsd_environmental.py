@@ -11,33 +11,40 @@ from generation_agent.agent import GenerationAgent
 DESCRIPTIONS = [
     *[
         (
-            "完全从零合成一条澳大利亚降雨相关的长单变量观测序列，不读取或拟合任何真实数据。"
-            f"这是第{i + 1}个独立地点或变量变体。降雨应为大量零值、成簇湿润事件、偏态正降雨强度和少量暴雨事件，"
-            "不得使用平滑正弦波模拟降雨。使用intermittent_event和instantaneous语义。"
-            "请在semantic_config中给出dry_spell_mean、wet_spell_mean、intensity_shape、"
-            "intensity_scale、storm_probability、storm_multiplier。"
+            "Synthesize a long univariate observational series related to Australian rainfall entirely "
+            "from scratch, without reading or fitting any real data. "
+            f"This is independent location or variable variant {i + 1}. Rainfall should contain many "
+            "zero values, clustered wet events, positively skewed nonzero intensity, and a few storms. "
+            "Do not model rainfall with a smooth sine wave. Use the intermittent_event generator and "
+            "instantaneous semantics. In semantic_config, specify dry_spell_mean, wet_spell_mean, "
+            "intensity_shape, intensity_scale, storm_probability, and storm_multiplier."
         )
         for i in range(7)
     ],
     *[
         (
-            "完全从零合成一条北京空气质量与PM2.5相关的长单变量环境监测信号，不读取或拟合任何真实数据。"
-            f"这是第{i + 1}个独立监测变量或站点变体。应体现非负、强自相关、缓慢气象背景、污染状态切换、"
-            "短时污染积累和少量严重污染过程；周期只表示索引空间潜在结构，不解释为真实采样频率。"
-            "使用smooth_environmental基础过程和regime_switching语义。"
-            "请在semantic_config中给出correlation_width、regime_width、regime_amplitude、"
-            "short_cycle、long_cycle，并明确异常参数。"
+            "Synthesize a long univariate environmental monitoring signal related to Beijing air "
+            "quality and PM2.5 entirely from scratch, without reading or fitting any real data. "
+            f"This is independent monitoring variable or station variant {i + 1}. The series should be "
+            "nonnegative and strongly autocorrelated, with a slowly varying meteorological background, "
+            "pollution regime changes, short accumulation episodes, and a few severe pollution events. "
+            "Cycles represent only latent structure in index space and must not be interpreted as a real "
+            "sampling frequency. Use a smooth_environmental base process with regime_switching semantics. "
+            "In semantic_config, specify correlation_width, regime_width, regime_amplitude, short_cycle, "
+            "long_cycle, and explicit anomaly parameters."
         )
         for i in range(7)
     ],
     *[
         (
-            "完全从零合成一条空气中苯浓度及相关传感器测量的长单变量序列，不读取或拟合任何真实数据。"
-            f"这是第{i + 1}个独立传感器或变量变体。应体现非负背景浓度、相关噪声、活动相关变化、"
-            "偶发排放峰和少量传感器短时跌落；周期只表示索引空间潜在结构，不解释为真实采样频率。"
-            "使用smooth_environmental基础过程和regime_switching语义。"
-            "请在semantic_config中给出correlation_width、activity_cycle、sensor_dropout_count，"
-            "并明确异常参数。"
+            "Synthesize a long univariate series of airborne benzene concentration and related sensor "
+            "measurements entirely from scratch, without reading or fitting any real data. "
+            f"This is independent sensor or variable variant {i + 1}. The series should have a "
+            "nonnegative background concentration, correlated noise, activity-driven variation, "
+            "occasional emission peaks, and a few brief sensor dropouts. Cycles represent only latent "
+            "structure in index space and must not be interpreted as a real sampling frequency. Use a "
+            "smooth_environmental base process with regime_switching semantics. In semantic_config, "
+            "specify correlation_width, activity_cycle, sensor_dropout_count, and explicit anomaly parameters."
         )
         for i in range(6)
     ],

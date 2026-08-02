@@ -559,19 +559,19 @@ def _variable_generator_hint(name: str, variable: dict, plan: SeriesPlan) -> str
             variable.get("value_support", ""),
         )
     )
-    if any(key in text for key in ("temp", "temperature", "气温", "温度")):
+    if any(key in text for key in ("temp", "temperature")):
         return "temperature"
-    if any(key in text for key in ("rain", "precip", "降水", "降雨")):
+    if any(key in text for key in ("rain", "precip")):
         return "rain"
-    if any(key in text for key in ("solar", "pv", "irradiance", "光伏", "太阳")):
+    if any(key in text for key in ("solar", "pv", "irradiance")):
         return "solar"
-    if any(key in text for key in ("traffic", "order", "request", "count", "客流", "订单", "流量")):
+    if any(key in text for key in ("traffic", "order", "request", "count")):
         return "count"
-    if any(key in text for key in ("schedule", "shift", "state", "open", "班次", "状态")):
+    if any(key in text for key in ("schedule", "shift", "state", "open")):
         return "state"
-    if any(key in text for key in ("humidity", "湿度")):
+    if any(key in text for key in ("humidity",)):
         return "smooth"
-    if any(key in text for key in ("cpu", "memory", "util", "usage", "利用率")):
+    if any(key in text for key in ("cpu", "memory", "util", "usage")):
         return "bounded"
     return str(variable.get("generator_type") or plan.generator_type or "cyclic_signal")
 
@@ -638,7 +638,7 @@ def _generate_variable_series(
         hour = _hour_of_day(length, context)
         active = ((hour >= 8) & (hour <= 18)).astype(float)
         values = (gate > 0.5).astype(float) * active
-        if "state" in name.lower() or "状态" in name:
+        if "state" in name.lower():
             values = np.where(values > 0, 1.0, 0.0)
     elif hint == "bounded":
         local.generator_type = "bounded_utilization"
@@ -838,7 +838,7 @@ def _apply_multivariate_plan(
             continue
         lag = int(relationship.get("lag", relationship.get("lag_steps", 0)) or 0)
         effect_text = str(relationship.get("effect", relationship.get("relation", ""))).lower()
-        sign = -1.0 if any(key in effect_text for key in ("negative", "drop", "decrease", "reduce", "反")) else 1.0
+        sign = -1.0 if any(key in effect_text for key in ("negative", "drop", "decrease", "reduce")) else 1.0
         coefficient = relationship.get("coefficient")
         if coefficient is None:
             coefficient = 0.18 * target_scale

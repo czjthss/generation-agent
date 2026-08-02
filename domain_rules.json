@@ -18,9 +18,9 @@
     "lower_bound": 0.0,
     "domain_params": {},
     "keywords": [
-      "潮汐",
-      "水位",
-      "海洋潮汐",
+      "tide",
+      "water level",
+      "ocean tide",
       "tidal"
     ],
     "rationale": "Tidal water level has strong periodic oscillation around a mean sea level."

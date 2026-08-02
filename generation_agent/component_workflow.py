@@ -199,7 +199,7 @@ def _feature_family_from_llm_component(component: dict[str, Any], plan: SeriesPl
     )
     if any(token in text for token in ("daylight", "solar", "pv", "irradiance", "sun")):
         return "daylight_envelope"
-    if any(token in text for token in ("cloud", "attenuation", "shading", "遮挡", "云")):
+    if any(token in text for token in ("cloud", "attenuation", "shading")):
         return "cloud_drop"
     if any(token in text for token in ("event", "arrival", "rain", "precip", "sparse", "storm")):
         return "event_mask" if "intensity" not in text else "gamma_intensity"
