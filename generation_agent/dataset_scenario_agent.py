@@ -31,7 +31,7 @@ class DatasetScenario:
 
 
 def _normalize_description(value: str) -> str:
-    return re.sub(r"[\s，,。.;；:：]+", "", value).lower()
+    return re.sub(r"[\s,.;:]+", "", value).lower()
 
 
 def _parse_scenarios(content: str) -> list[DatasetScenario]:

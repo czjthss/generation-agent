@@ -127,22 +127,22 @@ def _infer_unit_and_constraints(name: str, profile: dict[str, Any]) -> tuple[str
     text = name.lower()
     unit = "unknown"
     constraints: list[str] = []
-    if any(key in text for key in ("temp", "temperature", "气温", "温度")):
+    if any(key in text for key in ("temp", "temperature")):
         unit = "degC"
         constraints.append("smooth_environmental")
-    elif any(key in text for key in ("rain", "precip", "降水", "降雨")):
+    elif any(key in text for key in ("rain", "precip")):
         unit = "mm"
         constraints.extend(["nonnegative", "zero_inflated", "event_clustered"])
-    elif any(key in text for key in ("load", "power", "electric", "kw", "电力", "负荷")):
+    elif any(key in text for key in ("load", "power", "electric", "kw")):
         unit = "kW"
         constraints.append("nonnegative")
-    elif any(key in text for key in ("humidity", "rh", "湿度")):
+    elif any(key in text for key in ("humidity", "rh")):
         unit = "%"
         constraints.extend(["bounded_0_100", "smooth_environmental"])
-    elif any(key in text for key in ("cpu", "memory", "util", "usage", "使用率", "利用率")):
+    elif any(key in text for key in ("cpu", "memory", "util", "usage")):
         unit = "%"
         constraints.append("bounded_0_100")
-    elif any(key in text for key in ("sales", "revenue", "amount", "销售", "收入")):
+    elif any(key in text for key in ("sales", "revenue", "amount")):
         unit = "currency"
         constraints.append("nonnegative")
     if float(profile.get("nonnegative_ratio", 0.0)) >= 0.999:

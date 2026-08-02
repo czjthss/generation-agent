@@ -1,7 +1,5 @@
 # generation-agent
 
-[English](README.md) | [中文](README.zh-CN.md)
-
 `generation-agent` is a LangChain-based, multi-agent time-series generation system exposed through a CLI, a web UI, and an MCP server. It turns a natural-language request such as:
 
 ```text
@@ -72,7 +70,7 @@ Shell environment variables take precedence over values in `.env`.
 Generate one Arrow series:
 
 ```bash
-python -m generation_agent.cli "生成中国南方夏季工业园区的电力负载" \
+python -m generation_agent.cli "Generate summer electricity load for an industrial park in southern China" \
   --generation-mode sequence \
   --length 168 \
   --output outputs/load.arrow
@@ -81,7 +79,7 @@ python -m generation_agent.cli "生成中国南方夏季工业园区的电力负
 Generate a dataset from a broad domain:
 
 ```bash
-python -m generation_agent.cli "气象" \
+python -m generation_agent.cli "weather" \
   --generation-mode dataset \
   --series-count 20 \
   --length 720 \
@@ -95,7 +93,7 @@ Use `--cost-mode cheap|balanced|strict` to control context and retry budget. `ba
 Use a reference Arrow series:
 
 ```bash
-python -m generation_agent.cli "生成同类工业负载" \
+python -m generation_agent.cli "Generate a similar industrial load" \
   --reference reference_load.arrow \
   --length 1000 \
   --output outputs/synthetic_load.arrow
@@ -201,13 +199,13 @@ The anomaly interface is intentionally compact:
 
 ```bash
 # Let the LLM decide
-python -m generation_agent.cli "生成工业园区电力负载" --anomalies auto
+python -m generation_agent.cli "Generate industrial park electricity load" --anomalies auto
 
 # Disable anomalies
-python -m generation_agent.cli "生成工业园区电力负载" --anomalies off
+python -m generation_agent.cli "Generate industrial park electricity load" --anomalies off
 
 # Force high-severity anomalies
-python -m generation_agent.cli "生成累计销售额" \
+python -m generation_agent.cli "Generate cumulative sales" \
   --anomalies on \
   --anomaly-severity high
 ```
@@ -227,7 +225,7 @@ from generation_agent import AnomalyOverrides, GenerationAgent
 
 agent = GenerationAgent()
 df = agent.generate(
-    "生成累计销售额",
+    "Generate cumulative sales",
     length=168,
     anomaly_overrides=AnomalyOverrides(
         enabled=True,
@@ -260,4 +258,3 @@ Arrow metadata and dataset manifests store domain, unit, generator type, semanti
 
 - The production text-to-series path requires an LLM API key. It no longer silently falls back to no-LLM heuristic planning.
 - `.env`, generated data, cache files, and web outputs are ignored by Git.
-- The default GitHub README is English. The Chinese version is available at [README.zh-CN.md](README.zh-CN.md).

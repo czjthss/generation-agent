@@ -181,7 +181,7 @@ def heuristic_plan(description: str) -> SeriesPlan:
     elif any(k in text for k in ["temperature", "air temperature", "room temperature", "cold chain"]):
         plan.domain = "temperature"
         plan.generator_type = "smooth_environmental"
-        plan.unit = "°C"
+        plan.unit = "degC"
         plan.baseline = 26.0
         plan.daily_amplitude = 4.0
         plan.noise_sigma = 0.4
@@ -276,13 +276,15 @@ def heuristic_plan(description: str) -> SeriesPlan:
     if any(k in text for k in ["growth", "increase", "rise"]):
         plan.trend_slope = abs(plan.trend_slope or 10.0)
 
-    metric_match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*(kw|mw|kwh|°c|℃|mm|%)", text)
+    metric_match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*(kw|mw|kwh|degc|mm|%)", text)
     if metric_match:
         value = float(metric_match.group(1))
         unit = metric_match.group(2)
         if unit == "mw":
             value *= 1000.0
             unit = "kW"
+        elif unit == "degc":
+            unit = "degC"
         plan.baseline = value
         plan.unit = unit
 
