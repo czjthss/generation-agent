@@ -34,8 +34,8 @@ def _features(values: np.ndarray) -> np.ndarray:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input-dir", default="/data/czj/syn")
-    parser.add_argument("--output-dir", default="/data/czj/syn_samples")
+    parser.add_argument("--input-dir", default="outputs/utsd_synthetic")
+    parser.add_argument("--output-dir", default="outputs/utsd_synthetic_samples")
     parser.add_argument("--window", type=int, default=4096)
     parser.add_argument("--stride", type=int, default=16384)
     args = parser.parse_args()

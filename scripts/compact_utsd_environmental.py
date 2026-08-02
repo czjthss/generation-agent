@@ -9,8 +9,8 @@ import numpy as np
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input-dir", default="/data/czj/syn")
-    parser.add_argument("--output-dir", default="/data/czj/syn_compact")
+    parser.add_argument("--input-dir", default="outputs/utsd_synthetic")
+    parser.add_argument("--output-dir", default="outputs/utsd_synthetic_compact")
     args = parser.parse_args()
 
     input_dir = Path(args.input_dir)
