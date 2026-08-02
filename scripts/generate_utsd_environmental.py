@@ -178,7 +178,7 @@ def _benzene(plan: SeriesPlan, length: int, rng: np.random.Generator) -> tuple[n
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output-dir", default="/data/czj/syn")
+    parser.add_argument("--output-dir", default="outputs/utsd_synthetic")
     parser.add_argument("--plans", required=True)
     parser.add_argument("--seed", type=int, default=20260615)
     args = parser.parse_args()

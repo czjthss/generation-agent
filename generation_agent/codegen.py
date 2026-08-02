@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from .planner import SeriesPlan
+from .planner import DEFAULT_LLM_MODEL, SeriesPlan
 
 
 def render_generator_code(
@@ -75,5 +75,5 @@ if __name__ == "__main__":
         .replace("__FREQ__", repr(freq))
         .replace("__START__", repr(start))
         .replace("__SEED__", repr(seed))
-        .replace("__MODEL__", repr(model or plan.metadata.get("model") or "deepseek/deepseek-v4-flash"))
+        .replace("__MODEL__", repr(model or plan.metadata.get("model") or DEFAULT_LLM_MODEL))
     )

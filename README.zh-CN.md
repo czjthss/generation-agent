@@ -194,8 +194,8 @@ cp .env.example .env
 
 ```text
 OPENAI_API_KEY=你的 key
-OPENAI_BASE_URL=https://api.ofox.ai/v1
-GENERATION_AGENT_MODEL=deepseek/deepseek-v4-flash
+OPENAI_BASE_URL=https://api.openai.com/v1
+GENERATION_AGENT_MODEL=gpt-5.5
 GENERATION_AGENT_COST_MODE=balanced
 ```
 
@@ -204,7 +204,7 @@ GENERATION_AGENT_COST_MODE=balanced
 代码默认使用 OpenAI 兼容接口：
 
 ```text
-https://api.ofox.ai/v1
+https://api.openai.com/v1
 ```
 
 如需切换到其他兼容接口，可以设置：
@@ -213,11 +213,11 @@ https://api.ofox.ai/v1
 export OPENAI_BASE_URL="https://api.openai.com/v1"
 ```
 
-CLI 默认使用 `deepseek/deepseek-v4-flash` 进行规划；也可以显式指定：
+CLI 默认使用 `gpt-5.5` 进行规划；也可以显式指定：
 
 ```bash
 python -m generation_agent.cli "生成中国南方夏季降水量数据" \
-  --model deepseek/deepseek-v4-flash \
+  --model gpt-5.5 \
   --length 240 \
   --output outputs/rain.arrow
 ```
@@ -255,7 +255,7 @@ python -m generation_agent.cli "生成中国南方夏季降水量数据" \
 
 ```bash
 conda activate generation-agent
-cd /Users/chenzijie/Documents/Project/python/generation-agent
+cd generation-agent
 pip install -r requirements.txt
 python -m generation_agent.web_app
 ```

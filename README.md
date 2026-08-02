@@ -46,7 +46,7 @@ into synthetic time-series data saved as compact Arrow files. The goal is not to
 ```bash
 conda create -n generation-agent python=3.11 -y
 conda activate generation-agent
-cd /Users/chenzijie/Documents/Project/python/generation-agent
+cd generation-agent
 pip install -r requirements.txt
 ```
 
@@ -60,8 +60,8 @@ Then edit `.env`:
 
 ```text
 OPENAI_API_KEY=your_api_key_here
-OPENAI_BASE_URL=https://api.ofox.ai/v1
-GENERATION_AGENT_MODEL=deepseek/deepseek-v4-flash
+OPENAI_BASE_URL=https://api.openai.com/v1
+GENERATION_AGENT_MODEL=gpt-5.5
 GENERATION_AGENT_COST_MODE=balanced
 ```
 
@@ -109,7 +109,7 @@ Start the local web UI:
 
 ```bash
 conda activate generation-agent
-cd /Users/chenzijie/Documents/Project/python/generation-agent
+cd generation-agent
 python -m generation_agent.web_app
 ```
 

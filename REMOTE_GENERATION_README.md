@@ -6,10 +6,10 @@ The dataset names were used only as natural-language domain descriptions.
 
 ## Locations
 
-- Agent code: `/home/czj/agent`
-- LLM plans: `/home/czj/agent/utsd_llm_plans.json`
-- Lossless float32 output: `/data/czj/syn`
-- Compact quantized output: `/data/czj/syn_compact`
+- Agent code: `/path/to/generation-agent`
+- LLM plans: `/path/to/generation-agent/utsd_llm_plans.json`
+- Lossless float32 output: `outputs/utsd_synthetic`
+- Compact quantized output: `outputs/utsd_synthetic_compact`
 
 ## Dataset shape
 
@@ -31,7 +31,7 @@ Each sequence has:
 - `<name>_anomaly.npy`: uint8 anomaly flags
 - `<name>_plan.json`: the corresponding LLM plan
 
-Metadata and statistics are stored in `/data/czj/syn/manifest.json`.
+Metadata and statistics are stored in `outputs/utsd_synthetic/manifest.json`.
 
 ## Compact format
 
@@ -41,7 +41,7 @@ parameters:
 ```python
 import numpy as np
 
-item = np.load("/data/czj/syn_compact/00_AustraliaRainfall_00.npz")
+item = np.load("outputs/utsd_synthetic_compact/00_AustraliaRainfall_00.npz")
 n = int(item["point_count"])
 values = item["values"].astype(np.float32) * item["value_scale"] + item["value_min"]
 anomaly = np.unpackbits(item["anomaly_bits"])[:n]
@@ -54,13 +54,13 @@ generated values are required.
 ## Reproduce
 
 ```bash
-cd /home/czj/agent
+cd /path/to/generation-agent
 
 PYTHONPATH=. .venv/bin/python -u scripts/generate_utsd_environmental.py \
-  --plans /home/czj/agent/utsd_llm_plans.json \
-  --output-dir /data/czj/syn
+  --plans utsd_llm_plans.json \
+  --output-dir outputs/utsd_synthetic
 
 .venv/bin/python -u scripts/compact_utsd_environmental.py \
-  --input-dir /data/czj/syn \
-  --output-dir /data/czj/syn_compact
+  --input-dir outputs/utsd_synthetic \
+  --output-dir outputs/utsd_synthetic_compact
 ```
